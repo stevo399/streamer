@@ -92,6 +92,22 @@ class TestHandleResponse:
         curator._handle_response(response, path_lookup)
         assert len(curator.state.queue) == 1
 
+    def test_fuzzy_folder_expands_to_files(self):
+        curator = _make_curator()
+        path_lookup = {
+            "Main Menu/2020/ep01": "/path/to/ep01.mp3",
+            "Main Menu/2020/ep02": "/path/to/ep02.mp3",
+            "Main Menu/2021/ep03": "/path/to/ep03.mp3",
+        }
+        response = {
+            "action": "queue",
+            "tracks": ["Main Menu/2020"],
+            "reason": "Main Menu 2020 marathon",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 2
+        assert curator.state.curator_reason == "Main Menu 2020 marathon"
+
     def test_fuzzy_episode_with_title_stem(self):
         curator = _make_curator()
         path_lookup = {

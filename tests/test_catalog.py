@@ -87,3 +87,18 @@ class TestBuildCatalog:
         text, lookup = build_catalog(scanner)
         assert "notes.txt" not in text
         assert all("notes" not in k for k in lookup)
+
+    def test_nested_podcast_folders(self, tmp_path):
+        _make_files(tmp_path / "podcasts", {
+            "Main Menu": {
+                "2020": ["ep01.mp3", "ep02.mp3"],
+                "2021": ["ep03.mp3"],
+            },
+        })
+        scanner = Scanner(roots=[tmp_path / "podcasts"])
+        text, lookup = build_catalog(scanner)
+        assert "Main Menu" in text
+        assert "3 episodes" in text
+        assert "2020" in text
+        assert "Main Menu/2020/ep01" in lookup
+        assert "Main Menu/2021/ep03" in lookup

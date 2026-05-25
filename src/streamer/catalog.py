@@ -61,16 +61,27 @@ def _catalog_podcasts(root, lines, path_lookup, notes_dir):
 
     for show_dir in shows:
         show_name = show_dir.name
-        eps = sorted(
-            f for f in show_dir.iterdir()
+        all_eps = sorted(
+            f for f in show_dir.rglob("*")
             if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
         )
-        if not eps:
+        if not all_eps:
             continue
 
-        lines.append(f"{show_name} ({len(eps)} episodes)")
-        for ep in eps:
-            path_lookup[f"{show_name}/{ep.stem}"] = str(ep)
+        subfolders = set()
+        for ep in all_eps:
+            rel = ep.relative_to(show_dir)
+            if len(rel.parts) > 1:
+                path_lookup[f"{show_name}/{'/'.join(rel.parent.parts)}/{ep.stem}"] = str(ep)
+                subfolders.add(rel.parts[0])
+            else:
+                path_lookup[f"{show_name}/{ep.stem}"] = str(ep)
+
+        if subfolders:
+            folder_list = ", ".join(sorted(subfolders))
+            lines.append(f"{show_name} ({len(all_eps)} episodes, folders: {folder_list})")
+        else:
+            lines.append(f"{show_name} ({len(all_eps)} episodes)")
 
         _add_show_notes(show_name, notes_dir, lines)
 

@@ -180,15 +180,23 @@ class Curator:
             logger.warning("Curator: Ollama request failed: %s", e)
             return None
 
-    def _resolve_track(self, track_id: str, path_lookup: dict[str, str]) -> str | None:
+    def _resolve_tracks(self, track_id: str, path_lookup: dict[str, str]) -> list[str]:
         import re
 
         if track_id in path_lookup:
-            return path_lookup[track_id]
+            return [path_lookup[track_id]]
 
         parts = track_id.split("/")
         if len(parts) < 2:
-            return None
+            return []
+
+        prefix = track_id.lower().rstrip("/")
+        folder_matches = sorted(
+            path for key, path in path_lookup.items()
+            if key.lower().startswith(prefix + "/")
+        )
+        if folder_matches:
+            return folder_matches
 
         model_show = parts[0].lower().strip()
         model_ep = parts[-1].strip()
@@ -225,12 +233,12 @@ class Curator:
             if ep_num is not None:
                 key_ep_num = self._extract_episode_number(key_ep)
                 if key_ep_num == ep_num:
-                    return path
+                    return [path]
 
             if model_ep.lower() == key_ep.lower():
-                return path
+                return [path]
 
-        return None
+        return []
 
     @staticmethod
     def _extract_episode_number(stem: str) -> int | None:
@@ -259,10 +267,11 @@ class Curator:
 
         queued = 0
         for track_id in tracks:
-            path = self._resolve_track(track_id, path_lookup)
-            if path:
-                self.state.queue_add(path)
-                queued += 1
+            resolved = self._resolve_tracks(track_id, path_lookup)
+            if resolved:
+                for path in resolved:
+                    self.state.queue_add(path)
+                    queued += 1
             else:
                 logger.warning("Curator: track not found in catalog: %r", track_id)
 
