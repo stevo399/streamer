@@ -11,6 +11,7 @@ class ServerState:
         self._dj_enabled: bool = False
         self._curator_enabled: bool = False
         self._curator_reason: str | None = None
+        self._curator_should_announce: bool = False
 
     @property
     def queue(self) -> list[str]:
@@ -76,6 +77,17 @@ class ServerState:
     def curator_reason(self, value: str | None) -> None:
         with self._lock:
             self._curator_reason = value
+
+    def consume_curator_announcement(self) -> str | None:
+        with self._lock:
+            if self._curator_should_announce and self._curator_reason:
+                self._curator_should_announce = False
+                return self._curator_reason
+            return None
+
+    def set_curator_announcement(self) -> None:
+        with self._lock:
+            self._curator_should_announce = True
 
     def advance(self) -> str | None:
         with self._lock:

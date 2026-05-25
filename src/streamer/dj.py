@@ -228,6 +228,12 @@ def decode_to_pcm(audio_bytes: bytes) -> bytes | None:
         return None
 
 
+def get_tts_engine() -> TTSEngine:
+    if TTS_ENGINE == "gemini":
+        return GeminiTTSEngine(voice_name=TTS_VOICE)
+    return CloudTTSEngine()
+
+
 def generate_dj_clip(
     prev_track: str,
     next_track: str,

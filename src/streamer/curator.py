@@ -277,5 +277,6 @@ class Curator:
 
         if queued > 0 and reason:
             self.state.curator_reason = reason
+            self.state.set_curator_announcement()
         else:
             logger.warning("Curator: none of the requested tracks resolved")

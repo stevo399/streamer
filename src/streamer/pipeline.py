@@ -278,6 +278,10 @@ class AudioPipeline:
                 if pcm:
                     self._play_clip_pcm(pcm)
 
+            announcement = self.state.consume_curator_announcement()
+            if announcement:
+                self._play_curator_announcement(announcement)
+
             decoder = self._start_decoder(track)
             self._current_decoder = decoder
 
@@ -321,6 +325,20 @@ class AudioPipeline:
             ahead = expected - elapsed
             if ahead > 0.01:
                 time.sleep(ahead)
+
+    def _play_curator_announcement(self, text: str) -> None:
+        try:
+            from streamer.dj import decode_to_pcm, get_tts_engine
+            tts = get_tts_engine()
+            audio = tts.synthesize(text)
+            if not audio:
+                return
+            pcm = decode_to_pcm(audio)
+            if pcm:
+                self._dj_cancel.clear()
+                self._play_clip_pcm(pcm)
+        except Exception:
+            pass
 
     def _start_decoder(self, path: str) -> subprocess.Popen:
         return subprocess.Popen(
