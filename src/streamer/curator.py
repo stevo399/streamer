@@ -181,6 +181,8 @@ class Curator:
             return None
 
     def _resolve_track(self, track_id: str, path_lookup: dict[str, str]) -> str | None:
+        import re
+
         if track_id in path_lookup:
             return path_lookup[track_id]
 
@@ -192,7 +194,6 @@ class Curator:
         model_ep = parts[-1].strip()
         model_season = "/".join(parts[1:-1]).strip() if len(parts) > 2 else None
 
-        import re
         season_num = None
         if model_season:
             m = re.search(r"(\d+)", model_season)
@@ -202,7 +203,7 @@ class Curator:
         ep_num = None
         m = re.search(r"(\d+)", model_ep)
         if m:
-            ep_num = m.group(1).zfill(2)
+            ep_num = int(m.group(1))
 
         for key, path in path_lookup.items():
             key_parts = key.split("/")
@@ -221,12 +222,31 @@ class Curator:
                 if km and int(km.group(1)) != season_num:
                     continue
 
-            if ep_num and key_ep.zfill(2) == ep_num:
-                return path
+            if ep_num is not None:
+                key_ep_num = self._extract_episode_number(key_ep)
+                if key_ep_num == ep_num:
+                    return path
+
             if model_ep.lower() == key_ep.lower():
                 return path
 
         return None
+
+    @staticmethod
+    def _extract_episode_number(stem: str) -> int | None:
+        import re
+        m = re.search(r"[Ee](\d+)", stem)
+        if m:
+            return int(m.group(1))
+        m = re.search(r"x(\d+)", stem)
+        if m:
+            return int(m.group(1))
+        m = re.match(r"^(\d+)$", stem.strip())
+        if m:
+            return int(m.group(1))
+        m = re.search(r"(\d+)", stem)
+        if m:
+            return int(m.group(1))
 
     def _handle_response(self, response: dict, path_lookup: dict[str, str]):
         action = response.get("action", "pass")

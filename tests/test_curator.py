@@ -92,6 +92,28 @@ class TestHandleResponse:
         curator._handle_response(response, path_lookup)
         assert len(curator.state.queue) == 1
 
+    def test_fuzzy_episode_with_title_stem(self):
+        curator = _make_curator()
+        path_lookup = {
+            "Rick and Morty/Season 1 (2013)/[S01.E01] Pilot": "/path/to/pilot.mp3",
+            "Rick and Morty/Season 1 (2013)/[S01.E02] Lawnmower Dog": "/path/to/lawnmower.mp3",
+            "Rick and Morty/Season 1 (2013)/[S01.E03] Anatomy Park": "/path/to/anatomy.mp3",
+        }
+        response = {
+            "action": "queue",
+            "tracks": [
+                "Rick and Morty/Season 1/01",
+                "Rick and Morty/Season 1/02",
+                "Rick and Morty/Season 1/03",
+            ],
+            "reason": "Marathon: Rick and Morty S1",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 3
+        assert curator.state.queue[0] == "/path/to/pilot.mp3"
+        assert curator.state.queue[1] == "/path/to/lawnmower.mp3"
+        assert curator.state.curator_reason == "Marathon: Rick and Morty S1"
+
 
 class TestCheck:
     @patch("streamer.curator.build_catalog")
