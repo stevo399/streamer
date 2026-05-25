@@ -59,6 +59,39 @@ class TestHandleResponse:
         curator._handle_response(response, {})
         assert curator.state.curator_reason is None
 
+    def test_fuzzy_case_mismatch(self):
+        curator = _make_curator()
+        path_lookup = {"Red Dwarf/season 01/01": "/path/to/01.mp3"}
+        response = {
+            "action": "queue",
+            "tracks": ["Red Dwarf/Season 01/01"],
+            "reason": "Test",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 1
+
+    def test_fuzzy_season_format_mismatch(self):
+        curator = _make_curator()
+        path_lookup = {"Rick and Morty/Season 1 (2013)/01": "/path/to/01.mp3"}
+        response = {
+            "action": "queue",
+            "tracks": ["Rick and Morty/Season 1/01"],
+            "reason": "Test",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 1
+
+    def test_fuzzy_episode_number_padding(self):
+        curator = _make_curator()
+        path_lookup = {"Show/season 01/01": "/path/to/01.mp3"}
+        response = {
+            "action": "queue",
+            "tracks": ["Show/Season 1/1"],
+            "reason": "Test",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 1
+
 
 class TestCheck:
     @patch("streamer.curator.build_catalog")

@@ -180,6 +180,54 @@ class Curator:
             logger.warning("Curator: Ollama request failed: %s", e)
             return None
 
+    def _resolve_track(self, track_id: str, path_lookup: dict[str, str]) -> str | None:
+        if track_id in path_lookup:
+            return path_lookup[track_id]
+
+        parts = track_id.split("/")
+        if len(parts) < 2:
+            return None
+
+        model_show = parts[0].lower().strip()
+        model_ep = parts[-1].strip()
+        model_season = "/".join(parts[1:-1]).strip() if len(parts) > 2 else None
+
+        import re
+        season_num = None
+        if model_season:
+            m = re.search(r"(\d+)", model_season)
+            if m:
+                season_num = int(m.group(1))
+
+        ep_num = None
+        m = re.search(r"(\d+)", model_ep)
+        if m:
+            ep_num = m.group(1).zfill(2)
+
+        for key, path in path_lookup.items():
+            key_parts = key.split("/")
+            if len(key_parts) < 2:
+                continue
+
+            key_show = key_parts[0].lower()
+            key_ep = key_parts[-1]
+            key_season = "/".join(key_parts[1:-1]) if len(key_parts) > 2 else None
+
+            if model_show not in key_show and key_show not in model_show:
+                continue
+
+            if season_num is not None and key_season:
+                km = re.search(r"(\d+)", key_season)
+                if km and int(km.group(1)) != season_num:
+                    continue
+
+            if ep_num and key_ep.zfill(2) == ep_num:
+                return path
+            if model_ep.lower() == key_ep.lower():
+                return path
+
+        return None
+
     def _handle_response(self, response: dict, path_lookup: dict[str, str]):
         action = response.get("action", "pass")
         if action != "queue":
@@ -188,14 +236,10 @@ class Curator:
         tracks = response.get("tracks", [])
         reason = response.get("reason", "")
         logger.info("Curator: wants to queue %d tracks: %s", len(tracks), tracks)
-        sample_keys = list(path_lookup.keys())[:5]
-        logger.debug("Curator: sample path_lookup keys: %s", sample_keys)
-
-        normalized_lookup = {k.lower(): v for k, v in path_lookup.items()}
 
         queued = 0
         for track_id in tracks:
-            path = path_lookup.get(track_id) or normalized_lookup.get(track_id.lower())
+            path = self._resolve_track(track_id, path_lookup)
             if path:
                 self.state.queue_add(path)
                 queued += 1
