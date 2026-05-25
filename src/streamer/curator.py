@@ -30,11 +30,11 @@ CURATOR_SYSTEM_PROMPT = (
     'To queue tracks: {"action": "queue", "tracks": '
     '["ShowName/season NN/episode_stem", ...], '
     '"reason": "Brief explanation"}\n\n'
-    "Track identifiers must match the catalog exactly. Use the format "
-    "show_name/season_folder/episode_stem for entertainment, or "
+    "Track format: show_name/season_folder/episode_stem for entertainment "
+    "(episode stems are zero-padded numbers like 01, 02, 03), or "
     "podcast_name/episode_stem for podcasts.\n\n"
-    "Queue between 3 and 12 tracks. The reason field should be a short "
-    "human-readable explanation."
+    "Queue between 3 and 8 tracks. The reason field should be a short "
+    "human-readable explanation. Keep your response concise."
 )
 
 

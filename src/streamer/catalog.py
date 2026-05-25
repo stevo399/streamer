@@ -22,15 +22,6 @@ def build_catalog(scanner, notes_dir: str | None = None) -> tuple[str, dict[str,
     return "\n".join(lines).strip(), path_lookup
 
 
-def _summarize_episodes(eps: list[Path]) -> str:
-    stems = [f.stem for f in eps]
-    if all(s.isdigit() for s in stems):
-        return f"episodes {stems[0]}-{stems[-1]} ({len(eps)} total)"
-    if len(stems) <= 5:
-        return ", ".join(stems)
-    return f"{stems[0]}, {stems[1]}, {stems[2]} ... {stems[-1]} ({len(eps)} total)"
-
-
 def _catalog_entertainment(root, lines, path_lookup, notes_dir):
     lines.append("[Entertainment]")
     shows = sorted(d for d in root.iterdir() if d.is_dir())
@@ -51,18 +42,17 @@ def _catalog_entertainment(root, lines, path_lookup, notes_dir):
         if not seasons:
             continue
 
-        season_names = ", ".join(sorted(seasons.keys()))
-        lines.append(f"{show_name} (seasons: {season_names})")
+        total_eps = sum(len(eps) for eps in seasons.values())
+        season_list = sorted(seasons.keys())
+        lines.append(f"{show_name} ({len(season_list)} seasons, {total_eps} episodes, seasons: {', '.join(season_list)})")
 
-        for season_name in sorted(seasons.keys()):
-            eps = seasons[season_name]
-            summary = _summarize_episodes(eps)
-            lines.append(f"  {season_name}: {summary}")
-            for ep in eps:
+        for season_name in season_list:
+            for ep in seasons[season_name]:
                 path_lookup[f"{show_name}/{season_name}/{ep.stem}"] = str(ep)
 
         _add_show_notes(show_name, notes_dir, lines)
-        lines.append("")
+
+    lines.append("")
 
 
 def _catalog_podcasts(root, lines, path_lookup, notes_dir):
@@ -78,13 +68,13 @@ def _catalog_podcasts(root, lines, path_lookup, notes_dir):
         if not eps:
             continue
 
-        summary = _summarize_episodes(eps)
-        lines.append(f"{show_name}: {summary}")
+        lines.append(f"{show_name} ({len(eps)} episodes)")
         for ep in eps:
             path_lookup[f"{show_name}/{ep.stem}"] = str(ep)
 
         _add_show_notes(show_name, notes_dir, lines)
-        lines.append("")
+
+    lines.append("")
 
 
 def _add_show_notes(show_name, notes_dir, lines):
