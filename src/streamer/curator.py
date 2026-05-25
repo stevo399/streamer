@@ -86,7 +86,7 @@ class Curator:
             self.scanner,
             notes_dir=str(NOTES_DIR) if NOTES_DIR else None,
         )
-        logger.info("Curator: consulting Ollama (%d shows in catalog)", len(path_lookup))
+        logger.info("Curator: consulting Ollama (%d tracks in catalog)", len(path_lookup))
 
         history = self.state.history[-20:]
         history_text = "\n".join(history) if history else "(nothing played yet)"

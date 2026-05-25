@@ -28,9 +28,9 @@ class TestBuildCatalog:
         text, lookup = build_catalog(scanner)
         assert "Test Show" in text
         assert "season 01" in text
-        assert "3 episodes" in text
+        assert "3 total" in text
         assert "season 02" in text
-        assert "2 episodes" in text
+        assert "2 total" in text
 
     def test_podcasts(self, tmp_path):
         _make_files(tmp_path / "podcasts", {
@@ -39,7 +39,8 @@ class TestBuildCatalog:
         scanner = Scanner(roots=[tmp_path / "podcasts"])
         text, lookup = build_catalog(scanner)
         assert "Test Podcast" in text
-        assert "2 episodes" in text
+        assert "ep01" in text
+        assert "ep02" in text
 
     def test_includes_notes(self, tmp_path):
         _make_files(tmp_path / "entertainment", {
