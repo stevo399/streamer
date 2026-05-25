@@ -46,6 +46,7 @@ class Curator:
         self._thread: threading.Thread | None = None
         self._tracks_since_check = 0
         self._next_check_at = random.randint(3, 10)
+        self._force_check = threading.Event()
 
     def start(self):
         self._running = True
@@ -55,10 +56,17 @@ class Curator:
     def stop(self):
         self._running = False
 
+    def trigger(self):
+        self._force_check.set()
+
     def _run(self):
         last_track = self.state.current_track
         while self._running:
-            time.sleep(2)
+            if self._force_check.wait(timeout=2):
+                self._force_check.clear()
+                logger.info("Curator: forced check triggered")
+                self._check()
+                continue
 
             if self.state.curator_reason and not self.state.queue:
                 self.state.curator_reason = None

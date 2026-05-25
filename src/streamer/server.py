@@ -89,6 +89,8 @@ def create_app(state=None, scanner=None, pipeline=None):
     @auth.login_required
     def curator_toggle():
         app.state.curator_enabled = not app.state.curator_enabled
+        if app.state.curator_enabled and app.pipeline:
+            app.pipeline._curator.trigger()
         return redirect("/")
 
     @app.route("/api/state")
