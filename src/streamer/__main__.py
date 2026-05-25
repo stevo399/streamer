@@ -1,3 +1,5 @@
+import logging
+
 from streamer.config import HOST, PORT
 from streamer.pipeline import AudioPipeline
 from streamer.scanner import Scanner
@@ -6,6 +8,12 @@ from streamer.state import ServerState
 
 
 def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     state = ServerState()
     scanner = Scanner()
     pipeline = AudioPipeline(state, scanner)

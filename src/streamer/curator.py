@@ -71,26 +71,32 @@ class Curator:
             if self._tracks_since_check >= self._next_check_at:
                 self._tracks_since_check = 0
                 self._next_check_at = random.randint(3, 10)
+                logger.info("Curator: check triggered (next in %d tracks)", self._next_check_at)
                 self._check()
 
     def _check(self):
         if not self.state.curator_enabled:
+            logger.debug("Curator: skipping check (disabled)")
             return
         if self.state.queue:
+            logger.debug("Curator: skipping check (queue not empty)")
             return
 
         catalog_text, path_lookup = build_catalog(
             self.scanner,
             notes_dir=str(NOTES_DIR) if NOTES_DIR else None,
         )
+        logger.info("Curator: consulting Ollama (%d shows in catalog)", len(path_lookup))
 
         history = self.state.history[-20:]
         history_text = "\n".join(history) if history else "(nothing played yet)"
 
         response = self._ask_ollama(catalog_text, history_text)
         if not isinstance(response, dict):
+            logger.warning("Curator: no valid response from Ollama")
             return
 
+        logger.info("Curator: Ollama response: %s", response.get("action", "unknown"))
         self._handle_response(response, path_lookup)
 
     def _ensure_ollama_running(self) -> bool:
