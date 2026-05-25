@@ -188,10 +188,14 @@ class Curator:
         tracks = response.get("tracks", [])
         reason = response.get("reason", "")
         logger.info("Curator: wants to queue %d tracks: %s", len(tracks), tracks)
+        sample_keys = list(path_lookup.keys())[:5]
+        logger.debug("Curator: sample path_lookup keys: %s", sample_keys)
+
+        normalized_lookup = {k.lower(): v for k, v in path_lookup.items()}
 
         queued = 0
         for track_id in tracks:
-            path = path_lookup.get(track_id)
+            path = path_lookup.get(track_id) or normalized_lookup.get(track_id.lower())
             if path:
                 self.state.queue_add(path)
                 queued += 1
