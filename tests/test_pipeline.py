@@ -1,6 +1,6 @@
 import time
 
-from streamer.pipeline import AudioPipeline, RingBuffer
+from streamer.pipeline import AudioPipeline, RingBuffer, _parse_ogg_pages
 from streamer.scanner import Scanner
 from streamer.state import ServerState
 
@@ -63,6 +63,49 @@ class TestRingBuffer:
         assert buf.get_headers() == b"OggS_header_data"
 
 
+class TestParseOggPages:
+    def _make_page(self, payload: bytes) -> bytes:
+        n_segs = (len(payload) + 254) // 255
+        seg_table = bytes([255] * (n_segs - 1) + [len(payload) % 255 or 255])
+        seg_table = seg_table[:n_segs]
+        header = (
+            b'OggS'          # capture
+            + b'\x00'        # version
+            + b'\x00'        # header_type
+            + b'\x00' * 8   # granule_position
+            + b'\x00' * 4   # serial
+            + b'\x00' * 4   # sequence
+            + b'\x00' * 4   # CRC
+            + bytes([n_segs])
+            + seg_table
+        )
+        return header + payload
+
+    def test_empty_data(self):
+        assert _parse_ogg_pages(b"") == []
+
+    def test_single_complete_page(self):
+        page = self._make_page(b"hello")
+        pages = _parse_ogg_pages(page)
+        assert len(pages) == 1
+        assert pages[0] == (0, len(page))
+
+    def test_two_complete_pages(self):
+        p1 = self._make_page(b"first")
+        p2 = self._make_page(b"second")
+        pages = _parse_ogg_pages(p1 + p2)
+        assert len(pages) == 2
+        assert pages[1][0] == len(p1)
+
+    def test_incomplete_page_not_returned(self):
+        page = self._make_page(b"hello")
+        pages = _parse_ogg_pages(page[:-1])
+        assert pages == []
+
+    def test_non_oggs_start_returns_empty(self):
+        assert _parse_ogg_pages(b"garbage data") == []
+
+
 class TestAudioPipeline:
     def test_pipeline_produces_pcm_data(self, test_media_dir):
         state = ServerState()
@@ -76,8 +119,9 @@ class TestAudioPipeline:
             time.sleep(2)
 
             assert state.current_track is not None
-            pos = pipeline.pcm_buffer.get_current_position()
-            assert pos > 0
+            assert pipeline.pcm_buffer.get_current_position() > 0
+            assert pipeline.ogg_buffer.get_current_position() > 0
+            assert pipeline.ogg_buffer.get_headers()[:4] == b'OggS'
         finally:
             pipeline.stop()
 
@@ -94,6 +138,7 @@ class TestAudioPipeline:
 
             first_track = state.current_track
             pipeline.request_next()
+            time.sleep(0.5)
             assert state.current_track is not None
             assert any(first_track == h for h in state.history)
         finally:

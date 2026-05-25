@@ -203,7 +203,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             def feed_encoder():
                 pos = app.pipeline.pcm_buffer.get_current_position()
                 while not stop.is_set():
-                    data, new_pos = app.pipeline.pcm_buffer.read(pos)
+                    data, new_pos = app.pipeline.pcm_buffer.read(pos, max_bytes=4096)
                     if data is None:
                         pos = new_pos
                         continue
@@ -243,10 +243,30 @@ def create_app(state=None, scanner=None, pipeline=None):
 
     @app.route("/stream.ogg")
     def stream_ogg():
-        return _stream_response(
-            ["-f", "ogg", "-acodec", "libvorbis", "-b:a", "128k",
-             "-flush_packets", "1"],
-            "audio/ogg",
+        import time as _time
+        from flask import Response
+
+        def generate():
+            if not app.pipeline:
+                return
+            headers = app.pipeline.ogg_buffer.get_headers()
+            if headers:
+                yield headers
+            pos = app.pipeline.ogg_buffer.get_current_position()
+            while True:
+                data, new_pos = app.pipeline.ogg_buffer.read(pos, max_bytes=4096)
+                if data is None:
+                    return
+                if not data:
+                    _time.sleep(0.02)
+                    continue
+                pos = new_pos
+                yield data
+
+        return Response(
+            generate(),
+            mimetype="audio/ogg",
+            headers={"Cache-Control": "no-cache"},
         )
 
     @app.route("/stream.mp3")
