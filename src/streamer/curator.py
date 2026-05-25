@@ -65,7 +65,7 @@ class Curator:
             if self._force_check.wait(timeout=2):
                 self._force_check.clear()
                 logger.info("Curator: forced check triggered")
-                self._check()
+                self._check(force=True)
                 continue
 
             if self.state.curator_reason and not self.state.queue:
@@ -82,7 +82,7 @@ class Curator:
                 logger.info("Curator: check triggered (next in %d tracks)", self._next_check_at)
                 self._check()
 
-    def _check(self):
+    def _check(self, force: bool = False):
         if not self.state.curator_enabled:
             logger.debug("Curator: skipping check (disabled)")
             return
@@ -99,7 +99,7 @@ class Curator:
         history = self.state.history[-20:]
         history_text = "\n".join(history) if history else "(nothing played yet)"
 
-        response = self._ask_ollama(catalog_text, history_text)
+        response = self._ask_ollama(catalog_text, history_text, force=force)
         if not isinstance(response, dict):
             logger.warning("Curator: no valid response from Ollama")
             return
@@ -140,7 +140,7 @@ class Curator:
 
         return False
 
-    def _ask_ollama(self, catalog_text: str, history_text: str) -> dict | None:
+    def _ask_ollama(self, catalog_text: str, history_text: str, force: bool = False) -> dict | None:
         if not OLLAMA_URL:
             return None
 
@@ -151,6 +151,11 @@ class Curator:
             f"Media catalog:\n{catalog_text}\n\n"
             f"Recent history:\n{history_text}"
         )
+        if force:
+            user_message += (
+                "\n\nThe listener just activated you. Pick something "
+                "interesting from the catalog and queue it. Do NOT pass."
+            )
 
         payload = json.dumps({
             "model": OLLAMA_MODEL,
