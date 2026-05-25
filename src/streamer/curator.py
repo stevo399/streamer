@@ -187,6 +187,7 @@ class Curator:
 
         tracks = response.get("tracks", [])
         reason = response.get("reason", "")
+        logger.info("Curator: wants to queue %d tracks: %s", len(tracks), tracks)
 
         queued = 0
         for track_id in tracks:
@@ -194,6 +195,10 @@ class Curator:
             if path:
                 self.state.queue_add(path)
                 queued += 1
+            else:
+                logger.warning("Curator: track not found in catalog: %r", track_id)
 
         if queued > 0 and reason:
             self.state.curator_reason = reason
+        else:
+            logger.warning("Curator: none of the requested tracks resolved")
