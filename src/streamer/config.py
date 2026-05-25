@@ -13,6 +13,9 @@ MEDIA_ROOTS = [
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
+TTS_ENGINE = os.environ.get("TTS_ENGINE", "cloud").lower()
+TTS_VOICE = os.environ.get("TTS_VOICE", "Kore")
+
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8054"))
 
