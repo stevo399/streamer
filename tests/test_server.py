@@ -390,3 +390,73 @@ class TestApiQueue:
     def test_delete_invalid_index(self, api_client):
         resp = api_client.delete("/api/queue/99")
         assert resp.json()["ok"] is False
+
+
+class TestApiDJ:
+    def test_get_dj_status(self, api_client):
+        resp = api_client.get("/api/dj")
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is False
+
+    def test_set_dj_enabled(self, api_client, app_with_pipeline):
+        resp = api_client.post("/api/dj", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is True
+        assert app_with_pipeline.state.server_state.dj_enabled is True
+
+    def test_set_dj_disabled(self, api_client, app_with_pipeline):
+        app_with_pipeline.state.server_state.dj_enabled = True
+        resp = api_client.post("/api/dj", json={"enabled": False})
+        assert resp.json()["enabled"] is False
+
+
+class TestApiCurator:
+    def test_get_curator_status(self, api_client, mock_pipeline):
+        resp = api_client.get("/api/curator")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "enabled" in data
+        assert "tracks_since_check" in data
+        assert "next_check_at" in data
+
+    def test_set_curator_enabled(self, api_client, app_with_pipeline):
+        resp = api_client.post("/api/curator", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is True
+
+    def test_force_check(self, api_client, mock_pipeline):
+        resp = api_client.post("/api/curator/force")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        mock_pipeline._curator.trigger.assert_called_once()
+
+
+class TestApiBrowse:
+    def test_browse_root(self, api_client):
+        resp = api_client.get("/api/browse")
+        assert resp.status_code == 200
+        data = resp.json()
+        names = [d["name"] for d in data["dirs"]]
+        assert "entertainment" in names
+        assert "Podcast" in names
+        assert data["files"] == []
+
+    def test_browse_subpath(self, api_client):
+        resp = api_client.get("/api/browse/entertainment/Test Show/season 01")
+        assert resp.status_code == 200
+        data = resp.json()
+        file_names = [f["name"] for f in data["files"]]
+        assert "01.mp3" in file_names
+        assert "02.mp3" in file_names
+        assert "notes.txt" not in file_names
+
+    def test_browse_nonexistent_returns_404(self, api_client):
+        resp = api_client.get("/api/browse/nonexistent")
+        assert resp.status_code == 404
+
+    def test_browse_paths_are_relative(self, api_client):
+        resp = api_client.get("/api/browse/entertainment/Test Show/season 01")
+        data = resp.json()
+        for f in data["files"]:
+            assert "path" in f
+            assert f["path"].startswith("entertainment/")

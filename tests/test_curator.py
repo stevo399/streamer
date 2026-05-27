@@ -131,6 +131,20 @@ class TestHandleResponse:
         assert curator.state.curator_reason == "Marathon: Rick and Morty S1"
 
 
+class TestCuratorStatus:
+    def test_get_status(self):
+        curator = _make_curator()
+        curator.state.curator_enabled = True
+        curator.state.curator_reason = "Marathon"
+        curator._tracks_since_check = 3
+        curator._next_check_at = 7
+        status = curator.get_status()
+        assert status["enabled"] is True
+        assert status["reason"] == "Marathon"
+        assert status["tracks_since_check"] == 3
+        assert status["next_check_at"] == 7
+
+
 class TestCheck:
     @patch("streamer.curator.build_catalog")
     @patch.object(Curator, "_ask_ollama")

@@ -59,6 +59,14 @@ class Curator:
     def trigger(self):
         self._force_check.set()
 
+    def get_status(self) -> dict:
+        return {
+            "enabled": self.state.curator_enabled,
+            "reason": self.state.curator_reason,
+            "tracks_since_check": self._tracks_since_check,
+            "next_check_at": self._next_check_at,
+        }
+
     def _run(self):
         last_track = self.state.current_track
         while self._running:

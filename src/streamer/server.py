@@ -283,6 +283,73 @@ def create_app(state=None, scanner=None, pipeline=None):
             return {"ok": True}
         return {"ok": False}
 
+    @app.get("/api/dj")
+    def api_dj_status(_user: str = Depends(verify_credentials)):
+        return {"enabled": _state.dj_enabled}
+
+    @app.post("/api/dj")
+    def api_dj_set(
+        body: ToggleBody,
+        _user: str = Depends(verify_credentials),
+    ):
+        _state.dj_enabled = body.enabled
+        return {"enabled": _state.dj_enabled}
+
+    @app.get("/api/curator")
+    def api_curator_status(_user: str = Depends(verify_credentials)):
+        if _pipeline:
+            return _pipeline._curator.get_status()
+        return {
+            "enabled": _state.curator_enabled,
+            "reason": _state.curator_reason,
+            "tracks_since_check": 0,
+            "next_check_at": 0,
+        }
+
+    @app.post("/api/curator")
+    def api_curator_set(
+        body: ToggleBody,
+        _user: str = Depends(verify_credentials),
+    ):
+        _state.curator_enabled = body.enabled
+        if body.enabled and _pipeline:
+            _pipeline._curator.trigger()
+        return {"enabled": _state.curator_enabled}
+
+    @app.post("/api/curator/force")
+    def api_curator_force(_user: str = Depends(verify_credentials)):
+        if _pipeline:
+            _pipeline._curator.trigger()
+        return {"ok": True}
+
+    @app.get("/api/browse")
+    def api_browse_root(_user: str = Depends(verify_credentials)):
+        dirs = [
+            {"name": root.name, "path": root.name}
+            for root in _scanner.roots
+            if root.exists()
+        ]
+        return {"dirs": dirs, "files": []}
+
+    @app.get("/api/browse/{subpath:path}")
+    def api_browse_subpath(
+        subpath: str,
+        _user: str = Depends(verify_credentials),
+    ):
+        resolved = _scanner.resolve_browse_path(subpath)
+        if resolved is None or not resolved.is_dir():
+            raise HTTPException(status_code=404)
+        dir_names, file_names = _scanner.list_directory(resolved)
+        dirs = [
+            {"name": d, "path": subpath + "/" + d}
+            for d in dir_names
+        ]
+        files = [
+            {"name": f, "path": subpath + "/" + f}
+            for f in file_names
+        ]
+        return {"dirs": dirs, "files": files}
+
     # ── Streaming ────────────────────────────────────────────────────────
 
     @app.get("/stream.ogg")
