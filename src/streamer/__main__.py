@@ -1,5 +1,7 @@
 import logging
 
+import uvicorn
+
 from streamer.config import HOST, PORT
 from streamer.pipeline import AudioPipeline
 from streamer.scanner import Scanner
@@ -24,8 +26,9 @@ def main():
     print("Streaming server running")
     print(f"  Control panel: http://localhost:{PORT}")
     print(f"  Stream:        http://localhost:{PORT}/stream.ogg")
+    print(f"  API docs:      http://localhost:{PORT}/docs")
 
-    app.run(host=HOST, port=PORT, threaded=True)
+    uvicorn.run(app, host=HOST, port=PORT)
 
 
 if __name__ == "__main__":
