@@ -31,6 +31,90 @@ class ChatBody(BaseModel):
     message: str
 
 
+# ── Response models ──────────────────────────────────────────────────────
+
+
+class NowPlayingResponse(BaseModel):
+    track_name: str
+    track_path: str
+    elapsed: float | None
+    duration: float | None
+    remaining: float | None
+
+
+class OkResponse(BaseModel):
+    ok: bool
+
+
+class TrackOkResponse(BaseModel):
+    ok: bool
+    track: str | None = None
+
+
+class QueueItem(BaseModel):
+    name: str
+    path: str
+    index: int
+
+
+class QueueListResponse(BaseModel):
+    queue: list[QueueItem]
+
+
+class ToggleResponse(BaseModel):
+    enabled: bool
+
+
+class CuratorStatusResponse(BaseModel):
+    enabled: bool
+    reason: str | None
+    tracks_since_check: int
+    next_check_at: int
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+
+class ChatHistoryResponse(BaseModel):
+    messages: list[ChatMessage]
+
+
+class ChatResponse(BaseModel):
+    response: str
+    queued: list[str]
+
+
+class BrowseEntry(BaseModel):
+    name: str
+    path: str
+
+
+class BrowseResponse(BaseModel):
+    dirs: list[BrowseEntry]
+    files: list[BrowseEntry]
+
+
+class StateQueueItem(BaseModel):
+    name: str
+    path: str
+
+
+class StateResponse(BaseModel):
+    track_name: str
+    track_path: str
+    queue: list[StateQueueItem]
+    dj_enabled: bool
+    curator_enabled: bool
+    curator_reason: str | None
+    elapsed: float | None
+    duration: float | None
+    remaining: float | None
+    curator_tracks_since_check: int | None
+    curator_next_check_at: int | None
+
+
 def verify_credentials(
     credentials: HTTPBasicCredentials | None = Depends(_security),
 ) -> str:
@@ -57,14 +141,18 @@ def create_app(state=None, scanner=None, pipeline=None):
     _scanner = scanner or Scanner()
     _pipeline = pipeline
 
-    app = FastAPI()
+    app = FastAPI(
+        title="Streamer",
+        description="Personal audio streaming server with AI DJ and Curator.",
+        version="1.0.0",
+    )
     app.state.server_state = _state
     app.state.scanner = _scanner
     app.state.pipeline = _pipeline
 
     # ── HTML routes ──────────────────────────────────────────────────────
 
-    @app.get("/")
+    @app.get("/", include_in_schema=False)
     def index(request: Request, _user: str = Depends(verify_credentials)):
         current = _state.current_track
         track_name = Path(current).name if current else "Nothing playing"
@@ -81,19 +169,19 @@ def create_app(state=None, scanner=None, pipeline=None):
             "curator_reason": _state.curator_reason,
         })
 
-    @app.post("/next")
+    @app.post("/next", include_in_schema=False)
     def next_track(_user: str = Depends(verify_credentials)):
         if _pipeline:
             _pipeline.request_next()
         return RedirectResponse(url="/", status_code=303)
 
-    @app.post("/previous")
+    @app.post("/previous", include_in_schema=False)
     def previous_track(_user: str = Depends(verify_credentials)):
         if _pipeline:
             _pipeline.request_previous()
         return RedirectResponse(url="/", status_code=303)
 
-    @app.post("/queue/add")
+    @app.post("/queue/add", include_in_schema=False)
     def queue_add(
         file: str = Form(""),
         _user: str = Depends(verify_credentials),
@@ -103,7 +191,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             _state.queue_add(str(resolved))
         return RedirectResponse(url="/", status_code=303)
 
-    @app.post("/queue/remove")
+    @app.post("/queue/remove", include_in_schema=False)
     def queue_remove(
         index: int = Form(...),
         _user: str = Depends(verify_credentials),
@@ -111,19 +199,19 @@ def create_app(state=None, scanner=None, pipeline=None):
         _state.queue_remove(index)
         return RedirectResponse(url="/", status_code=303)
 
-    @app.post("/dj/toggle")
+    @app.post("/dj/toggle", include_in_schema=False)
     def dj_toggle(_user: str = Depends(verify_credentials)):
         _state.dj_enabled = not _state.dj_enabled
         return RedirectResponse(url="/", status_code=303)
 
-    @app.post("/curator/toggle")
+    @app.post("/curator/toggle", include_in_schema=False)
     def curator_toggle(_user: str = Depends(verify_credentials)):
         _state.curator_enabled = not _state.curator_enabled
         if _state.curator_enabled and _pipeline:
             _pipeline._curator.trigger()
         return RedirectResponse(url="/", status_code=303)
 
-    @app.post("/play")
+    @app.post("/play", include_in_schema=False)
     def play_now(
         file: str = Form(""),
         _user: str = Depends(verify_credentials),
@@ -134,7 +222,7 @@ def create_app(state=None, scanner=None, pipeline=None):
                 _pipeline.request_play(str(resolved))
         return RedirectResponse(url="/", status_code=303)
 
-    @app.get("/browse/play")
+    @app.get("/browse/play", include_in_schema=False)
     def browse_play(
         request: Request,
         file: str = "",
@@ -149,7 +237,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             "browse_path": file,
         })
 
-    @app.get("/browse/")
+    @app.get("/browse/", include_in_schema=False)
     def browse_root(
         request: Request,
         _user: str = Depends(verify_credentials),
@@ -165,7 +253,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             "breadcrumbs": [],
         })
 
-    @app.get("/browse/{subpath:path}")
+    @app.get("/browse/{subpath:path}", include_in_schema=False)
     def browse_subpath(
         request: Request,
         subpath: str,
@@ -204,7 +292,7 @@ def create_app(state=None, scanner=None, pipeline=None):
 
     # ── Legacy API ───────────────────────────────────────────────────────
 
-    @app.get("/api/state")
+    @app.get("/api/state", tags=["State"], summary="Full server state", response_model=StateResponse)
     def api_state(_user: str = Depends(verify_credentials)):
         current = _state.current_track
         info = {"elapsed": None, "duration": None, "remaining": None}
@@ -232,7 +320,7 @@ def create_app(state=None, scanner=None, pipeline=None):
 
     # ── JSON API ─────────────────────────────────────────────────────────
 
-    @app.get("/api/now-playing")
+    @app.get("/api/now-playing", tags=["Tracks"], summary="Now playing with timing", response_model=NowPlayingResponse)
     def api_now_playing(_user: str = Depends(verify_credentials)):
         current = _state.current_track
         info = {"elapsed": None, "duration": None, "remaining": None}
@@ -244,19 +332,19 @@ def create_app(state=None, scanner=None, pipeline=None):
             **info,
         }
 
-    @app.post("/api/tracks/next")
+    @app.post("/api/tracks/next", tags=["Tracks"], summary="Skip to next track", response_model=OkResponse)
     def api_tracks_next(_user: str = Depends(verify_credentials)):
         if _pipeline:
             _pipeline.request_next()
         return {"ok": True}
 
-    @app.post("/api/tracks/previous")
+    @app.post("/api/tracks/previous", tags=["Tracks"], summary="Go to previous track", response_model=TrackOkResponse)
     def api_tracks_previous(_user: str = Depends(verify_credentials)):
         if _pipeline and _pipeline.request_previous():
             return {"ok": True, "track": _state.current_track}
         return {"ok": False}
 
-    @app.post("/api/tracks/play")
+    @app.post("/api/tracks/play", tags=["Tracks"], summary="Play a specific file", response_model=OkResponse)
     def api_tracks_play(body: PathBody, _user: str = Depends(verify_credentials)):
         resolved = _scanner.resolve_browse_path(body.path)
         if resolved and resolved.is_file():
@@ -265,7 +353,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             return {"ok": True}
         return {"ok": False}
 
-    @app.get("/api/queue")
+    @app.get("/api/queue", tags=["Queue"], summary="List queued tracks", response_model=QueueListResponse)
     def api_queue_list(_user: str = Depends(verify_credentials)):
         return {
             "queue": [
@@ -274,7 +362,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             ],
         }
 
-    @app.post("/api/queue")
+    @app.post("/api/queue", tags=["Queue"], summary="Add a file to the queue", response_model=OkResponse)
     def api_queue_add(
         body: PathBody,
         _user: str = Depends(verify_credentials),
@@ -285,7 +373,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             return {"ok": True}
         return {"ok": False}
 
-    @app.delete("/api/queue/{index}")
+    @app.delete("/api/queue/{index}", tags=["Queue"], summary="Remove a track from the queue", response_model=OkResponse)
     def api_queue_remove(
         index: int,
         _user: str = Depends(verify_credentials),
@@ -294,11 +382,11 @@ def create_app(state=None, scanner=None, pipeline=None):
             return {"ok": True}
         return {"ok": False}
 
-    @app.get("/api/dj")
+    @app.get("/api/dj", tags=["DJ"], summary="Get DJ status", response_model=ToggleResponse)
     def api_dj_status(_user: str = Depends(verify_credentials)):
         return {"enabled": _state.dj_enabled}
 
-    @app.post("/api/dj")
+    @app.post("/api/dj", tags=["DJ"], summary="Enable or disable the DJ", response_model=ToggleResponse)
     def api_dj_set(
         body: ToggleBody,
         _user: str = Depends(verify_credentials),
@@ -306,7 +394,7 @@ def create_app(state=None, scanner=None, pipeline=None):
         _state.dj_enabled = body.enabled
         return {"enabled": _state.dj_enabled}
 
-    @app.get("/api/curator")
+    @app.get("/api/curator", tags=["Curator"], summary="Get curator status and check schedule", response_model=CuratorStatusResponse)
     def api_curator_status(_user: str = Depends(verify_credentials)):
         if _pipeline:
             return _pipeline._curator.get_status()
@@ -317,7 +405,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             "next_check_at": 0,
         }
 
-    @app.post("/api/curator")
+    @app.post("/api/curator", tags=["Curator"], summary="Enable or disable the curator", response_model=ToggleResponse)
     def api_curator_set(
         body: ToggleBody,
         _user: str = Depends(verify_credentials),
@@ -327,19 +415,19 @@ def create_app(state=None, scanner=None, pipeline=None):
             _pipeline._curator.trigger()
         return {"enabled": _state.curator_enabled}
 
-    @app.post("/api/curator/force")
+    @app.post("/api/curator/force", tags=["Curator"], summary="Force an immediate curator check", response_model=OkResponse)
     def api_curator_force(_user: str = Depends(verify_credentials)):
         if _pipeline:
             _pipeline._curator.trigger()
         return {"ok": True}
 
-    @app.get("/api/curator/chat")
+    @app.get("/api/curator/chat", tags=["Curator"], summary="Get chat history with the curator", response_model=ChatHistoryResponse)
     def api_curator_chat_history(_user: str = Depends(verify_credentials)):
         if _pipeline:
             return {"messages": _pipeline._curator.get_chat_history()}
         return {"messages": []}
 
-    @app.post("/api/curator/chat")
+    @app.post("/api/curator/chat", tags=["Curator"], summary="Send a chat message to the curator", response_model=ChatResponse)
     def api_curator_chat_send(
         body: ChatBody,
         _user: str = Depends(verify_credentials),
@@ -348,7 +436,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             return {"response": "Pipeline not available.", "queued": []}
         return _pipeline._curator.chat(body.message)
 
-    @app.get("/api/browse")
+    @app.get("/api/browse", tags=["Browse"], summary="List media root folders", response_model=BrowseResponse)
     def api_browse_root(_user: str = Depends(verify_credentials)):
         dirs = [
             {"name": root.name, "path": root.name}
@@ -357,7 +445,7 @@ def create_app(state=None, scanner=None, pipeline=None):
         ]
         return {"dirs": dirs, "files": []}
 
-    @app.get("/api/browse/{subpath:path}")
+    @app.get("/api/browse/{subpath:path}", tags=["Browse"], summary="List directories and audio files at a path", response_model=BrowseResponse)
     def api_browse_subpath(
         subpath: str,
         _user: str = Depends(verify_credentials),
@@ -378,7 +466,7 @@ def create_app(state=None, scanner=None, pipeline=None):
 
     # ── Streaming ────────────────────────────────────────────────────────
 
-    @app.get("/stream.ogg")
+    @app.get("/stream.ogg", include_in_schema=False)
     def stream_ogg():
         def generate():
             if not _pipeline:
@@ -403,7 +491,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             headers={"Cache-Control": "no-cache"},
         )
 
-    @app.get("/stream.mp3")
+    @app.get("/stream.mp3", include_in_schema=False)
     def stream_mp3():
         return _stream_response(
             _pipeline,
