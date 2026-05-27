@@ -219,6 +219,41 @@ def create_app(state=None, scanner=None, pipeline=None):
             "curator_reason": _state.curator_reason,
         }
 
+    # ── JSON API ─────────────────────────────────────────────────────────
+
+    @app.get("/api/now-playing")
+    def api_now_playing(_user: str = Depends(verify_credentials)):
+        current = _state.current_track
+        info = {"elapsed": None, "duration": None, "remaining": None}
+        if _pipeline:
+            info = _pipeline.get_playback_info()
+        return {
+            "track_name": Path(current).name if current else "Nothing playing",
+            "track_path": current or "",
+            **info,
+        }
+
+    @app.post("/api/tracks/next")
+    def api_tracks_next(_user: str = Depends(verify_credentials)):
+        if _pipeline:
+            _pipeline.request_next()
+        return {"ok": True}
+
+    @app.post("/api/tracks/previous")
+    def api_tracks_previous(_user: str = Depends(verify_credentials)):
+        if _pipeline and _pipeline.request_previous():
+            return {"ok": True, "track": _state.current_track}
+        return {"ok": False}
+
+    @app.post("/api/tracks/play")
+    def api_tracks_play(body: PathBody, _user: str = Depends(verify_credentials)):
+        resolved = _scanner.resolve_browse_path(body.path)
+        if resolved and resolved.is_file():
+            if _pipeline:
+                _pipeline.request_play(str(resolved))
+            return {"ok": True}
+        return {"ok": False}
+
     # ── Streaming ────────────────────────────────────────────────────────
 
     @app.get("/stream.ogg")
