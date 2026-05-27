@@ -101,6 +101,8 @@ class AudioPipeline:
         self._prefetch_future: Future | None = None
         self._prefetch_for: str | None = None    # next track the prefetched clip is keyed to
         self._pre_selected_random: str | None = None  # random pick stored for reuse
+        self._track_duration: float | None = None
+        self._track_bytes_written: int = 0
 
     def start(self):
         self._running = True
@@ -263,6 +265,37 @@ class AudioPipeline:
         except Exception:
             return None
 
+    # ── Playback info ────────────────────────────────────────────────────────
+
+    def _probe_duration(self, path: str) -> float | None:
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0",
+                    path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return float(proc.stdout.strip())
+        except Exception:
+            pass
+        return None
+
+    def get_playback_info(self) -> dict:
+        elapsed = self._track_bytes_written / BYTES_PER_SECOND
+        duration = self._track_duration
+        return {
+            "elapsed": round(elapsed, 1),
+            "duration": round(duration, 1) if duration else None,
+            "remaining": round(duration - elapsed, 1) if duration else None,
+        }
+
     # ── Playback ──────────────────────────────────────────────────────────────
 
     def _run(self):
@@ -284,13 +317,14 @@ class AudioPipeline:
 
             decoder = self._start_decoder(track)
             self._current_decoder = decoder
+            self._track_duration = self._probe_duration(track)
+            self._track_bytes_written = 0
 
             # While this track plays, generate the clip for the next transition.
             if self.state.dj_enabled:
                 self._start_clip_prefetch(track)
 
             track_start = time.monotonic()
-            bytes_written = 0
 
             while self._running:
                 chunk = decoder.stdout.read(4096)
@@ -298,9 +332,9 @@ class AudioPipeline:
                     break
                 self.pcm_buffer.write(chunk)
                 self._write_to_ogg_encoder(chunk)
-                bytes_written += len(chunk)
+                self._track_bytes_written += len(chunk)
 
-                expected = bytes_written / BYTES_PER_SECOND
+                expected = self._track_bytes_written / BYTES_PER_SECOND
                 elapsed = time.monotonic() - track_start
                 ahead = expected - elapsed
                 if ahead > 0.01:

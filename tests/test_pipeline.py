@@ -1,6 +1,7 @@
 import time
+from unittest.mock import MagicMock
 
-from streamer.pipeline import AudioPipeline, RingBuffer, _parse_ogg_pages
+from streamer.pipeline import AudioPipeline, BYTES_PER_SECOND, RingBuffer, _parse_ogg_pages
 from streamer.scanner import Scanner
 from streamer.state import ServerState
 
@@ -104,6 +105,47 @@ class TestParseOggPages:
 
     def test_non_oggs_start_returns_empty(self):
         assert _parse_ogg_pages(b"garbage data") == []
+
+
+class TestPlaybackInfo:
+    def test_get_playback_info_initial(self):
+        state = ServerState()
+        scanner = MagicMock()
+        pipeline = AudioPipeline(state, scanner)
+        info = pipeline.get_playback_info()
+        assert info["elapsed"] == 0.0
+        assert info["duration"] is None
+        assert info["remaining"] is None
+
+    def test_get_playback_info_with_duration(self):
+        state = ServerState()
+        scanner = MagicMock()
+        pipeline = AudioPipeline(state, scanner)
+        pipeline._track_duration = 180.0
+        pipeline._track_bytes_written = BYTES_PER_SECOND * 30
+        info = pipeline.get_playback_info()
+        assert info["elapsed"] == 30.0
+        assert info["duration"] == 180.0
+        assert info["remaining"] == 150.0
+
+    def test_probe_duration_returns_float(self, test_media_dir):
+        state = ServerState()
+        scanner = MagicMock()
+        pipeline = AudioPipeline(state, scanner)
+        path = str(
+            test_media_dir / "entertainment" / "Test Show" / "season 01" / "01.mp3"
+        )
+        duration = pipeline._probe_duration(path)
+        assert duration is not None
+        assert isinstance(duration, float)
+        assert duration > 0
+
+    def test_probe_duration_returns_none_for_bad_file(self):
+        state = ServerState()
+        scanner = MagicMock()
+        pipeline = AudioPipeline(state, scanner)
+        duration = pipeline._probe_duration("/nonexistent/file.mp3")
+        assert duration is None
 
 
 class TestAudioPipeline:
