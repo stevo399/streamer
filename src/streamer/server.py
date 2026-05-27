@@ -72,8 +72,7 @@ def create_app(state=None, scanner=None, pipeline=None):
         queue_items = [
             {"name": Path(p).name, "path": p} for p in _state.queue
         ]
-        return _templates.TemplateResponse("index.html", {
-            "request": request,
+        return _templates.TemplateResponse(request, "index.html", {
             "track_name": track_name,
             "track_path": track_path,
             "queue": queue_items,
@@ -144,8 +143,7 @@ def create_app(state=None, scanner=None, pipeline=None):
         resolved = _scanner.resolve_browse_path(file)
         if resolved is None or not resolved.is_file():
             raise HTTPException(status_code=404)
-        return _templates.TemplateResponse("play.html", {
-            "request": request,
+        return _templates.TemplateResponse(request, "play.html", {
             "file_name": resolved.name,
             "file_path": str(resolved),
             "browse_path": file,
@@ -161,8 +159,7 @@ def create_app(state=None, scanner=None, pipeline=None):
             for root in _scanner.roots
             if root.exists()
         ]
-        return _templates.TemplateResponse("browse.html", {
-            "request": request,
+        return _templates.TemplateResponse(request, "browse.html", {
             "dirs": dirs,
             "files": [],
             "breadcrumbs": [],
@@ -199,8 +196,7 @@ def create_app(state=None, scanner=None, pipeline=None):
                 {"name": part, "href": f"/browse/{quote(bc_path)}"}
             )
 
-        return _templates.TemplateResponse("browse.html", {
-            "request": request,
+        return _templates.TemplateResponse(request, "browse.html", {
             "dirs": dirs,
             "files": files,
             "breadcrumbs": breadcrumbs,
