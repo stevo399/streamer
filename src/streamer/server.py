@@ -322,6 +322,21 @@ def create_app(state=None, scanner=None, pipeline=None):
             _pipeline._curator.trigger()
         return {"ok": True}
 
+    @app.get("/api/curator/chat")
+    def api_curator_chat_history(_user: str = Depends(verify_credentials)):
+        if _pipeline:
+            return {"messages": _pipeline._curator.get_chat_history()}
+        return {"messages": []}
+
+    @app.post("/api/curator/chat")
+    def api_curator_chat_send(
+        body: ChatBody,
+        _user: str = Depends(verify_credentials),
+    ):
+        if not _pipeline:
+            return {"response": "Pipeline not available.", "queued": []}
+        return _pipeline._curator.chat(body.message)
+
     @app.get("/api/browse")
     def api_browse_root(_user: str = Depends(verify_credentials)):
         dirs = [

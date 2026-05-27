@@ -460,3 +460,31 @@ class TestApiBrowse:
         for f in data["files"]:
             assert "path" in f
             assert f["path"].startswith("entertainment/")
+
+
+class TestApiCuratorChat:
+    def test_get_chat_empty(self, api_client):
+        resp = api_client.get("/api/curator/chat")
+        assert resp.status_code == 200
+        assert resp.json()["messages"] == []
+
+    def test_post_chat_message(self, api_client, mock_pipeline):
+        resp = api_client.post(
+            "/api/curator/chat",
+            json={"message": "What should I listen to?"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "response" in data
+        assert "queued" in data
+        mock_pipeline._curator.chat.assert_called_once_with(
+            "What should I listen to?"
+        )
+
+    def test_chat_without_pipeline(self, client):
+        resp = client.post(
+            "/api/curator/chat",
+            json={"message": "hello"},
+        )
+        assert resp.status_code == 200
+        assert "response" in resp.json()

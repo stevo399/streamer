@@ -145,6 +145,75 @@ class TestCuratorStatus:
         assert status["next_check_at"] == 7
 
 
+class TestCuratorChat:
+    def test_get_chat_history_initially_empty(self):
+        curator = _make_curator()
+        assert curator.get_chat_history() == []
+
+    def test_chat_appends_to_history(self):
+        curator = _make_curator()
+        curator._chat_history.append({"role": "user", "content": "hello"})
+        curator._chat_history.append({"role": "assistant", "content": "hi"})
+        history = curator.get_chat_history()
+        assert len(history) == 2
+        assert history[0]["role"] == "user"
+        assert history[1]["role"] == "assistant"
+
+    @patch("streamer.curator.OLLAMA_URL", "http://localhost:11434")
+    @patch("streamer.curator.urllib.request.urlopen")
+    def test_chat_returns_response(self, mock_urlopen):
+        response_body = json.dumps({
+            "message": {"content": "I recommend Red Dwarf!"}
+        }).encode()
+        mock_response = MagicMock()
+        mock_response.read.return_value = response_body
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        curator = _make_curator()
+        result = curator.chat("What should I listen to?")
+        assert result["response"] == "I recommend Red Dwarf!"
+        assert result["queued"] == []
+        assert len(curator.get_chat_history()) == 2
+
+    @patch("streamer.curator.OLLAMA_URL", "http://localhost:11434")
+    @patch("streamer.curator.urllib.request.urlopen")
+    def test_chat_extracts_queue_action(self, mock_urlopen):
+        response_text = (
+            'Sure! Here you go.\n'
+            '{"action": "queue", "tracks": ["Show/season 01/01"], "reason": "By request"}'
+        )
+        response_body = json.dumps({
+            "message": {"content": response_text}
+        }).encode()
+        mock_response = MagicMock()
+        mock_response.read.return_value = response_body
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        state = ServerState()
+        scanner = MagicMock()
+        scanner.roots = []
+        curator = Curator(state, scanner)
+
+        with patch.object(curator, "_resolve_tracks", return_value=["/path/01.mp3"]):
+            with patch.object(curator, "_ensure_ollama_running", return_value=True):
+                result = curator.chat("Play Show season 1")
+
+        assert len(result["queued"]) == 1
+        assert result["queued"][0] == "/path/01.mp3"
+        assert state.queue == ["/path/01.mp3"]
+
+    @patch("streamer.curator.OLLAMA_URL", "")
+    def test_chat_fails_without_ollama_url(self):
+        curator = _make_curator()
+        result = curator.chat("hello")
+        assert "queued" in result
+        assert result["queued"] == []
+
+
 class TestCheck:
     @patch("streamer.curator.build_catalog")
     @patch.object(Curator, "_ask_ollama")

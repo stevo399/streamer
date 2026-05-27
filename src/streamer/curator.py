@@ -38,6 +38,25 @@ CURATOR_SYSTEM_PROMPT = (
 )
 
 
+CURATOR_CHAT_PROMPT = (
+    "You are the curator for a personal audio streaming station. The listener "
+    "is chatting with you about the media library. You have knowledge of the "
+    "full media catalog and recent play history.\n\n"
+    "You can:\n"
+    "- Answer questions about available shows, podcasts, and episodes\n"
+    "- Make recommendations based on what's available\n"
+    "- Take requests to play specific content\n\n"
+    "When the listener asks you to play something, respond conversationally "
+    "AND include a JSON block with the tracks to queue:\n"
+    '{"action": "queue", "tracks": ["ShowName/season NN/episode_stem", ...], '
+    '"reason": "Brief explanation"}\n\n'
+    "Track format: show_name/season_folder/episode_stem for entertainment, "
+    "or podcast_name/episode_stem for podcasts.\n\n"
+    "Be friendly, knowledgeable, and concise. If you don't recognize something "
+    "in the catalog, say so rather than guessing."
+)
+
+
 class Curator:
     def __init__(self, state, scanner):
         self.state = state
@@ -47,6 +66,7 @@ class Curator:
         self._tracks_since_check = 0
         self._next_check_at = random.randint(3, 10)
         self._force_check = threading.Event()
+        self._chat_history: list[dict] = []
 
     def start(self):
         self._running = True
@@ -66,6 +86,109 @@ class Curator:
             "tracks_since_check": self._tracks_since_check,
             "next_check_at": self._next_check_at,
         }
+
+    def get_chat_history(self) -> list[dict]:
+        return list(self._chat_history)
+
+    def chat(self, message: str) -> dict:
+        if not OLLAMA_URL:
+            return {"response": "Ollama is not configured.", "queued": []}
+
+        if not self._ensure_ollama_running():
+            return {"response": "Cannot connect to Ollama.", "queued": []}
+
+        self._chat_history.append({"role": "user", "content": message})
+
+        catalog_text, path_lookup = build_catalog(
+            self.scanner,
+            notes_dir=str(NOTES_DIR) if NOTES_DIR else None,
+        )
+        history = self.state.history[-20:]
+        history_text = "\n".join(history) if history else "(nothing played yet)"
+
+        context_msg = (
+            f"Media catalog:\n{catalog_text}\n\n"
+            f"Recent play history:\n{history_text}"
+        )
+
+        messages = [
+            {"role": "system", "content": CURATOR_CHAT_PROMPT},
+            {"role": "user", "content": context_msg},
+            {"role": "assistant", "content": "Got it, I have the catalog and history. How can I help?"},
+        ] + self._chat_history
+
+        payload = json.dumps({
+            "model": OLLAMA_MODEL,
+            "messages": messages,
+            "stream": False,
+        }).encode()
+
+        try:
+            req = urllib.request.Request(
+                f"{OLLAMA_URL}/api/chat",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read())
+                response_text = data["message"]["content"]
+        except Exception as e:
+            logger.warning("Curator chat failed: %s", e)
+            self._chat_history.pop()
+            return {"response": "Sorry, something went wrong.", "queued": []}
+
+        self._chat_history.append({"role": "assistant", "content": response_text})
+
+        queued = self._extract_and_queue(response_text, path_lookup)
+        return {"response": response_text, "queued": queued}
+
+    def _extract_and_queue(self, response_text: str, path_lookup: dict) -> list[str]:
+        import re
+
+        try:
+            data = json.loads(response_text.strip())
+            if isinstance(data, dict) and data.get("action") == "queue":
+                return self._queue_from_chat(data, path_lookup)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        for match in re.finditer(
+            r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL,
+        ):
+            try:
+                data = json.loads(match.group(1))
+                if isinstance(data, dict) and data.get("action") == "queue":
+                    return self._queue_from_chat(data, path_lookup)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        for match in re.finditer(
+            r'\{[^{}]*"action"\s*:\s*"queue"[^{}]*\}', response_text,
+        ):
+            try:
+                data = json.loads(match.group())
+                if isinstance(data, dict) and data.get("action") == "queue":
+                    return self._queue_from_chat(data, path_lookup)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        return []
+
+    def _queue_from_chat(self, data: dict, path_lookup: dict) -> list[str]:
+        tracks = data.get("tracks", [])
+        reason = data.get("reason", "Chat request")
+        queued = []
+
+        for track_id in tracks:
+            resolved = self._resolve_tracks(track_id, path_lookup)
+            for path in resolved:
+                self.state.queue_add(path)
+                queued.append(path)
+
+        if queued and reason:
+            self.state.curator_reason = reason
+
+        return queued
 
     def _run(self):
         last_track = self.state.current_track
