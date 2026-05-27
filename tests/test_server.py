@@ -1,4 +1,5 @@
 import time
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -243,3 +244,149 @@ class TestStreamEndpoint:
                 assert first_chunk[:4] == b"OggS"
         finally:
             pipeline.stop()
+
+
+# ── Fixtures for API tests (with mock pipeline) ─────────────────────────
+
+
+@pytest.fixture
+def mock_pipeline():
+    pipeline = MagicMock()
+    pipeline.get_playback_info.return_value = {
+        "elapsed": 30.5,
+        "duration": 180.0,
+        "remaining": 149.5,
+    }
+    pipeline.request_next = MagicMock()
+    pipeline.request_previous = MagicMock(return_value=True)
+    pipeline.request_play = MagicMock()
+    pipeline._curator = MagicMock()
+    pipeline._curator.get_status.return_value = {
+        "enabled": False,
+        "reason": None,
+        "tracks_since_check": 2,
+        "next_check_at": 5,
+    }
+    pipeline._curator.get_chat_history.return_value = []
+    pipeline._curator.chat.return_value = {
+        "response": "Sure thing.",
+        "queued": [],
+    }
+    return pipeline
+
+
+@pytest.fixture
+def app_with_pipeline(test_media_dir, mock_pipeline):
+    state = ServerState()
+    scanner = Scanner(roots=[
+        test_media_dir / "entertainment",
+        test_media_dir / "Podcast",
+    ])
+    state.current_track = str(
+        test_media_dir / "entertainment" / "Test Show" / "season 01" / "01.mp3"
+    )
+    return create_app(state=state, scanner=scanner, pipeline=mock_pipeline)
+
+
+@pytest.fixture
+def api_client(app_with_pipeline):
+    return TestClient(app_with_pipeline)
+
+
+# ── API tests ────────────────────────────────────────────────────────────
+
+
+class TestApiNowPlaying:
+    def test_returns_track_info(self, api_client):
+        resp = api_client.get("/api/now-playing")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["track_name"] == "01.mp3"
+        assert data["elapsed"] == 30.5
+        assert data["duration"] == 180.0
+        assert data["remaining"] == 149.5
+
+    def test_returns_nulls_without_pipeline(self, client):
+        resp = client.get("/api/now-playing")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["elapsed"] is None
+        assert data["duration"] is None
+
+
+class TestApiTrackControl:
+    def test_next(self, api_client, mock_pipeline):
+        resp = api_client.post("/api/tracks/next")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        mock_pipeline.request_next.assert_called_once()
+
+    def test_previous(self, api_client, mock_pipeline):
+        resp = api_client.post("/api/tracks/previous")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    def test_previous_no_history(self, api_client, mock_pipeline):
+        mock_pipeline.request_previous.return_value = False
+        resp = api_client.post("/api/tracks/previous")
+        data = resp.json()
+        assert data["ok"] is False
+
+    def test_play_valid_path(self, api_client, mock_pipeline):
+        resp = api_client.post(
+            "/api/tracks/play",
+            json={"path": "entertainment/Test Show/season 01/01.mp3"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        mock_pipeline.request_play.assert_called_once()
+
+    def test_play_invalid_path(self, api_client):
+        resp = api_client.post(
+            "/api/tracks/play",
+            json={"path": "nonexistent/file.mp3"},
+        )
+        assert resp.json()["ok"] is False
+
+
+class TestApiQueue:
+    def test_get_empty_queue(self, api_client):
+        resp = api_client.get("/api/queue")
+        assert resp.status_code == 200
+        assert resp.json()["queue"] == []
+
+    def test_get_queue_with_items(self, api_client, app_with_pipeline):
+        app_with_pipeline.state.server_state.queue_add(r"C:\media\track.mp3")
+        resp = api_client.get("/api/queue")
+        data = resp.json()
+        assert len(data["queue"]) == 1
+        assert data["queue"][0]["name"] == "track.mp3"
+        assert data["queue"][0]["index"] == 0
+
+    def test_enqueue_valid_path(self, api_client, app_with_pipeline):
+        resp = api_client.post(
+            "/api/queue",
+            json={"path": "entertainment/Test Show/season 01/01.mp3"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert len(app_with_pipeline.state.server_state.queue) == 1
+
+    def test_enqueue_invalid_path(self, api_client):
+        resp = api_client.post(
+            "/api/queue",
+            json={"path": "nonexistent/file.mp3"},
+        )
+        assert resp.json()["ok"] is False
+
+    def test_delete_queue_item(self, api_client, app_with_pipeline):
+        app_with_pipeline.state.server_state.queue_add("a.mp3")
+        app_with_pipeline.state.server_state.queue_add("b.mp3")
+        resp = api_client.delete("/api/queue/0")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert app_with_pipeline.state.server_state.queue == ["b.mp3"]
+
+    def test_delete_invalid_index(self, api_client):
+        resp = api_client.delete("/api/queue/99")
+        assert resp.json()["ok"] is False

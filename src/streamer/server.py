@@ -254,6 +254,35 @@ def create_app(state=None, scanner=None, pipeline=None):
             return {"ok": True}
         return {"ok": False}
 
+    @app.get("/api/queue")
+    def api_queue_list(_user: str = Depends(verify_credentials)):
+        return {
+            "queue": [
+                {"name": Path(p).name, "path": p, "index": i}
+                for i, p in enumerate(_state.queue)
+            ],
+        }
+
+    @app.post("/api/queue")
+    def api_queue_add(
+        body: PathBody,
+        _user: str = Depends(verify_credentials),
+    ):
+        resolved = _scanner.resolve_browse_path(body.path)
+        if resolved and resolved.is_file():
+            _state.queue_add(str(resolved))
+            return {"ok": True}
+        return {"ok": False}
+
+    @app.delete("/api/queue/{index}")
+    def api_queue_remove(
+        index: int,
+        _user: str = Depends(verify_credentials),
+    ):
+        if _state.queue_remove(index):
+            return {"ok": True}
+        return {"ok": False}
+
     # ── Streaming ────────────────────────────────────────────────────────
 
     @app.get("/stream.ogg")
