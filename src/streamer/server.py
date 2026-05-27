@@ -207,6 +207,12 @@ def create_app(state=None, scanner=None, pipeline=None):
     @app.get("/api/state")
     def api_state(_user: str = Depends(verify_credentials)):
         current = _state.current_track
+        info = {"elapsed": None, "duration": None, "remaining": None}
+        if _pipeline:
+            info = _pipeline.get_playback_info()
+        curator_status = {}
+        if _pipeline:
+            curator_status = _pipeline._curator.get_status()
         return {
             "track_name": Path(current).name if current else "Nothing playing",
             "track_path": current or "",
@@ -217,6 +223,11 @@ def create_app(state=None, scanner=None, pipeline=None):
             "dj_enabled": _state.dj_enabled,
             "curator_enabled": _state.curator_enabled,
             "curator_reason": _state.curator_reason,
+            "elapsed": info["elapsed"],
+            "duration": info["duration"],
+            "remaining": info["remaining"],
+            "curator_tracks_since_check": curator_status.get("tracks_since_check"),
+            "curator_next_check_at": curator_status.get("next_check_at"),
         }
 
     # ── JSON API ─────────────────────────────────────────────────────────

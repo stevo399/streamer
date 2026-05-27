@@ -9,6 +9,7 @@
 <main>
     <h1>Now Playing</h1>
     <p aria-live="polite" id="now-playing"><strong id="track-name">{{ track_name }}</strong> &mdash; <span id="track-path">{{ track_path }}</span></p>
+    <p aria-live="off" id="track-timing"></p>
 
     <section aria-label="Playback controls">
         <h2>Controls</h2>
@@ -56,6 +57,18 @@
         <form method="post" action="/curator/toggle">
             <button type="submit" id="curator-toggle">Turn {{ "off" if curator_enabled else "on" }}</button>
         </form>
+        <p id="curator-check-info" hidden>Tracks until next check: <strong id="curator-tracks-remaining">-</strong></p>
+        <button type="button" id="curator-force" hidden>Force Check</button>
+    </section>
+
+    <section aria-label="Chat with Curator">
+        <h2>Chat with Curator</h2>
+        <div id="chat-messages" role="log" aria-live="polite" style="max-height:300px;overflow-y:auto;border:1px solid #ccc;padding:8px;margin-bottom:8px"></div>
+        <form id="chat-form">
+            <label for="chat-input">Message:</label>
+            <input type="text" id="chat-input" name="message" autocomplete="off">
+            <button type="submit">Send</button>
+        </form>
     </section>
 
     <nav aria-label="Actions">
@@ -69,10 +82,27 @@
 <script>
 (function() {
     var interval = 5000;
+
+    function formatTime(secs) {
+        if (secs == null) return "--:--";
+        var mins = Math.floor(secs / 60);
+        var sec = Math.floor(secs % 60);
+        return mins + ":" + (sec < 10 ? "0" : "") + sec;
+    }
+
+    function esc(t) {
+        var d = document.createElement("div");
+        d.textContent = t;
+        return d.innerHTML;
+    }
+
     function update() {
         fetch("/api/state").then(function(r) { return r.json(); }).then(function(s) {
             document.getElementById("track-name").textContent = s.track_name;
             document.getElementById("track-path").textContent = s.track_path;
+
+            var timing = document.getElementById("track-timing");
+            timing.textContent = formatTime(s.elapsed) + " / " + formatTime(s.duration);
 
             var reason = document.getElementById("curator-reason");
             var reasonText = document.getElementById("curator-reason-text");
@@ -103,13 +133,66 @@
             document.getElementById("dj-toggle").textContent = s.dj_enabled ? "Turn off" : "Turn on";
             document.getElementById("curator-status").textContent = s.curator_enabled ? "on" : "off";
             document.getElementById("curator-toggle").textContent = s.curator_enabled ? "Turn off" : "Turn on";
+
+            var checkInfo = document.getElementById("curator-check-info");
+            var forceBtn = document.getElementById("curator-force");
+            if (s.curator_enabled && s.curator_next_check_at != null) {
+                var remaining = s.curator_next_check_at - (s.curator_tracks_since_check || 0);
+                document.getElementById("curator-tracks-remaining").textContent = remaining;
+                checkInfo.hidden = false;
+                forceBtn.hidden = false;
+            } else {
+                checkInfo.hidden = true;
+                forceBtn.hidden = true;
+            }
         }).catch(function() {});
     }
-    function esc(t) {
-        var d = document.createElement("div");
-        d.textContent = t;
-        return d.innerHTML;
+
+    document.getElementById("curator-force").addEventListener("click", function() {
+        fetch("/api/curator/force", {method: "POST"});
+    });
+
+    var chatMessages = document.getElementById("chat-messages");
+    var chatForm = document.getElementById("chat-form");
+    var chatInput = document.getElementById("chat-input");
+
+    function addChatMessage(role, text) {
+        var div = document.createElement("div");
+        var strong = document.createElement("strong");
+        strong.textContent = role + ": ";
+        div.appendChild(strong);
+        div.appendChild(document.createTextNode(text));
+        chatMessages.appendChild(div);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
     }
+
+    chatForm.addEventListener("submit", function(e) {
+        e.preventDefault();
+        var msg = chatInput.value.trim();
+        if (!msg) return;
+        chatInput.value = "";
+        addChatMessage("You", msg);
+        fetch("/api/curator/chat", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({message: msg})
+        }).then(function(r) { return r.json(); }).then(function(data) {
+            addChatMessage("Curator", data.response);
+            if (data.queued && data.queued.length > 0) {
+                addChatMessage("System", "Queued " + data.queued.length + " track(s).");
+            }
+        }).catch(function() {
+            addChatMessage("System", "Failed to reach the curator.");
+        });
+    });
+
+    fetch("/api/curator/chat").then(function(r) { return r.json(); }).then(function(data) {
+        for (var i = 0; i < data.messages.length; i++) {
+            var m = data.messages[i];
+            addChatMessage(m.role === "user" ? "You" : "Curator", m.content);
+        }
+    }).catch(function() {});
+
     setInterval(update, interval);
 })();
 </script>

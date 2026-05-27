@@ -488,3 +488,46 @@ class TestApiCuratorChat:
         )
         assert resp.status_code == 200
         assert "response" in resp.json()
+
+
+class TestApiStateEnriched:
+    def test_state_includes_timing(self, api_client):
+        resp = api_client.get("/api/state")
+        data = resp.json()
+        assert "elapsed" in data
+        assert "duration" in data
+        assert "remaining" in data
+        assert data["elapsed"] == 30.5
+
+    def test_state_includes_curator_status(self, api_client):
+        resp = api_client.get("/api/state")
+        data = resp.json()
+        assert "curator_tracks_since_check" in data
+        assert "curator_next_check_at" in data
+
+    def test_state_timing_null_without_pipeline(self, client):
+        resp = client.get("/api/state")
+        data = resp.json()
+        assert data["elapsed"] is None
+        assert data["duration"] is None
+
+
+class TestControlPanelUpdates:
+    def test_has_timing_element(self, client):
+        resp = client.get("/")
+        assert 'id="track-timing"' in resp.text
+
+    def test_has_curator_force_button(self, client):
+        resp = client.get("/")
+        assert 'id="curator-force"' in resp.text
+
+    def test_has_chat_section(self, client):
+        resp = client.get("/")
+        assert 'id="chat-messages"' in resp.text
+        assert 'id="chat-input"' in resp.text
+        assert "Chat with Curator" in resp.text
+
+    def test_chat_section_is_accessible(self, client):
+        resp = client.get("/")
+        assert 'role="log"' in resp.text
+        assert 'for="chat-input"' in resp.text
