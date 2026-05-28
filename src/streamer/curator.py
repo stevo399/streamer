@@ -7,8 +7,17 @@ import threading
 import time
 import urllib.request
 
+from google import genai
+from google.genai import types
+
 from streamer.catalog import build_catalog
-from streamer.config import NOTES_DIR, OLLAMA_MODEL, OLLAMA_URL
+from streamer.config import (
+    CURATOR_CHAT_MODEL,
+    GEMINI_API_KEY,
+    NOTES_DIR,
+    OLLAMA_MODEL,
+    OLLAMA_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +100,57 @@ class Curator:
         return list(self._chat_history)
 
     def chat(self, message: str) -> dict:
+        if CURATOR_CHAT_MODEL.lower() == "ollama":
+            return self._chat_ollama(message)
+        return self._chat_gemini(message)
+
+    def _chat_gemini(self, message: str) -> dict:
+        if not GEMINI_API_KEY:
+            return {"response": "Gemini API key is not configured.", "queued": []}
+
+        self._chat_history.append({"role": "user", "content": message})
+
+        catalog_text, path_lookup = build_catalog(
+            self.scanner,
+            notes_dir=str(NOTES_DIR) if NOTES_DIR else None,
+        )
+        history = self.state.history[-20:]
+        history_text = "\n".join(history) if history else "(nothing played yet)"
+
+        context_msg = (
+            f"Media catalog:\n{catalog_text}\n\n"
+            f"Recent play history:\n{history_text}"
+        )
+
+        contents = [
+            types.Content(role="user", parts=[types.Part(text=context_msg)]),
+            types.Content(role="model", parts=[types.Part(text="Got it, I have the catalog and history. How can I help?")]),
+        ]
+        for entry in self._chat_history:
+            role = "model" if entry["role"] == "assistant" else "user"
+            contents.append(types.Content(role=role, parts=[types.Part(text=entry["content"])]))
+
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model=CURATOR_CHAT_MODEL,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=CURATOR_CHAT_PROMPT,
+                    max_output_tokens=2048,
+                ),
+            )
+            response_text = response.text.strip() if response.text else ""
+        except Exception as e:
+            logger.warning("Curator Gemini chat failed: %s", e)
+            self._chat_history.pop()
+            return {"response": "Sorry, something went wrong.", "queued": []}
+
+        self._chat_history.append({"role": "assistant", "content": response_text})
+        queued = self._extract_and_queue(response_text, path_lookup)
+        return {"response": response_text, "queued": queued}
+
+    def _chat_ollama(self, message: str) -> dict:
         if not OLLAMA_URL:
             return {"response": "Ollama is not configured.", "queued": []}
 
@@ -138,7 +198,6 @@ class Curator:
             return {"response": "Sorry, something went wrong.", "queued": []}
 
         self._chat_history.append({"role": "assistant", "content": response_text})
-
         queued = self._extract_and_queue(response_text, path_lookup)
         return {"response": response_text, "queued": queued}
 

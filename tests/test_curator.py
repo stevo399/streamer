@@ -159,6 +159,7 @@ class TestCuratorChat:
         assert history[0]["role"] == "user"
         assert history[1]["role"] == "assistant"
 
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "ollama")
     @patch("streamer.curator.OLLAMA_URL", "http://localhost:11434")
     @patch("streamer.curator.urllib.request.urlopen")
     def test_chat_returns_response(self, mock_urlopen):
@@ -177,6 +178,7 @@ class TestCuratorChat:
         assert result["queued"] == []
         assert len(curator.get_chat_history()) == 2
 
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "ollama")
     @patch("streamer.curator.OLLAMA_URL", "http://localhost:11434")
     @patch("streamer.curator.urllib.request.urlopen")
     def test_chat_extracts_queue_action(self, mock_urlopen):
@@ -206,12 +208,98 @@ class TestCuratorChat:
         assert result["queued"][0] == "/path/01.mp3"
         assert state.queue == ["/path/01.mp3"]
 
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "ollama")
     @patch("streamer.curator.OLLAMA_URL", "")
     def test_chat_fails_without_ollama_url(self):
         curator = _make_curator()
         result = curator.chat("hello")
         assert "queued" in result
         assert result["queued"] == []
+
+
+class TestCuratorChatGemini:
+    @patch("streamer.curator.GEMINI_API_KEY", "fake-key")
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "gemini-2.5-flash")
+    @patch("streamer.curator.genai")
+    def test_chat_uses_gemini(self, mock_genai):
+        mock_response = MagicMock()
+        mock_response.text = "I recommend Family Guy!"
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        mock_genai.Client.return_value = mock_client
+
+        curator = _make_curator()
+        result = curator.chat("What has Republican Town?")
+
+        assert result["response"] == "I recommend Family Guy!"
+        assert result["queued"] == []
+        mock_genai.Client.assert_called_once_with(api_key="fake-key")
+        assert len(curator.get_chat_history()) == 2
+
+    @patch("streamer.curator.GEMINI_API_KEY", "fake-key")
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "gemini-2.5-flash")
+    @patch("streamer.curator.genai")
+    def test_gemini_chat_extracts_queue_action(self, mock_genai):
+        response_text = (
+            'Sure! Here you go.\n'
+            '{"action": "queue", "tracks": ["Show/season 01/01"], "reason": "By request"}'
+        )
+        mock_response = MagicMock()
+        mock_response.text = response_text
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        mock_genai.Client.return_value = mock_client
+
+        state = ServerState()
+        scanner = MagicMock()
+        scanner.roots = []
+        curator = Curator(state, scanner)
+
+        with patch.object(curator, "_resolve_tracks", return_value=["/path/01.mp3"]):
+            result = curator.chat("Play Show season 1")
+
+        assert len(result["queued"]) == 1
+        assert state.queue == ["/path/01.mp3"]
+
+    @patch("streamer.curator.GEMINI_API_KEY", "fake-key")
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "gemini-2.5-flash")
+    @patch("streamer.curator.genai")
+    def test_gemini_chat_handles_failure(self, mock_genai):
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception("API error")
+        mock_genai.Client.return_value = mock_client
+
+        curator = _make_curator()
+        result = curator.chat("hello")
+
+        assert "went wrong" in result["response"]
+        assert result["queued"] == []
+        assert len(curator.get_chat_history()) == 0
+
+    @patch("streamer.curator.GEMINI_API_KEY", "")
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "gemini-2.5-flash")
+    def test_gemini_chat_fails_without_api_key(self):
+        curator = _make_curator()
+        result = curator.chat("hello")
+        assert "not configured" in result["response"].lower()
+        assert result["queued"] == []
+
+    @patch("streamer.curator.CURATOR_CHAT_MODEL", "ollama")
+    @patch("streamer.curator.OLLAMA_URL", "http://localhost:11434")
+    @patch("streamer.curator.urllib.request.urlopen")
+    def test_ollama_fallback(self, mock_urlopen):
+        response_body = json.dumps({
+            "message": {"content": "Hello from Ollama!"}
+        }).encode()
+        mock_response = MagicMock()
+        mock_response.read.return_value = response_body
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        curator = _make_curator()
+        result = curator.chat("hello")
+        assert result["response"] == "Hello from Ollama!"
 
 
 class TestCheck:
