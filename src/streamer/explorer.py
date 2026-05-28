@@ -56,3 +56,45 @@ class ExplorerStatus:
             "log": list(self.log),
             "error": self.error,
         }
+
+
+def _collect_shows(scanner) -> list[dict]:
+    shows = []
+    for root in scanner.roots:
+        if not root.exists():
+            continue
+        is_podcast = "podcast" in root.name.lower()
+        for show_dir in sorted(root.iterdir()):
+            if not show_dir.is_dir():
+                continue
+            if is_podcast:
+                episodes = sorted(
+                    f.stem for f in show_dir.rglob("*")
+                    if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
+                )
+                if episodes:
+                    shows.append({
+                        "name": show_dir.name,
+                        "type": "podcast",
+                        "seasons": {},
+                        "episodes": episodes,
+                    })
+            else:
+                seasons: dict[str, list[str]] = {}
+                for sub in sorted(show_dir.iterdir()):
+                    if sub.is_dir():
+                        eps = sorted(
+                            f.stem for f in sub.iterdir()
+                            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
+                        )
+                        if eps:
+                            seasons[sub.name] = eps
+                if seasons:
+                    all_eps = [ep for eps in seasons.values() for ep in eps]
+                    shows.append({
+                        "name": show_dir.name,
+                        "type": "entertainment",
+                        "seasons": seasons,
+                        "episodes": all_eps,
+                    })
+    return shows
