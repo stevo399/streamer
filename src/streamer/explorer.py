@@ -98,3 +98,118 @@ def _collect_shows(scanner) -> list[dict]:
                         "episodes": all_eps,
                     })
     return shows
+
+
+EXPLORER_PROMPT = (
+    "You are a media library assistant. Given information about a show or podcast, "
+    "write a concise description covering: what it is about, its tone and themes, "
+    "and any particularly notable or fan-favorite episodes. If you don't recognize "
+    "the show, say so briefly rather than fabricating details."
+)
+
+
+def explore(scanner, status: ExplorerStatus, force: bool = False):
+    status.running = True
+    status.error = None
+    status.completed = 0
+    status.current_show = ""
+
+    if NOTES_DIR is None:
+        status.error = "NOTES_DIR is not configured."
+        status.running = False
+        status.push_event({"type": "error", "message": status.error})
+        return
+
+    if not GEMINI_API_KEY:
+        status.error = "Gemini API key is not configured."
+        status.running = False
+        status.push_event({"type": "error", "message": status.error})
+        return
+
+    try:
+        all_shows = _collect_shows(scanner)
+
+        if not force:
+            all_shows = [
+                s for s in all_shows
+                if not (NOTES_DIR / s["name"] / "show.md").is_file()
+            ]
+
+        status.total = len(all_shows)
+
+        if not all_shows:
+            status.running = False
+            status.push_event({"type": "finished", "completed": 0, "total": 0})
+            return
+
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        for show in all_shows:
+            name = show["name"]
+            status.current_show = name
+            status.push_event({
+                "type": "exploring",
+                "show": name,
+                "completed": status.completed,
+                "total": status.total,
+            })
+
+            try:
+                if show["seasons"]:
+                    season_info = []
+                    for sname, eps in sorted(show["seasons"].items()):
+                        season_info.append(f"  {sname}: {', '.join(eps)}")
+                    structure = "\n".join(season_info)
+                else:
+                    structure = ", ".join(show["episodes"][:50])
+
+                prompt = (
+                    f"Here is a {'podcast' if show['type'] == 'podcast' else 'show'} "
+                    f"called \"{name}\" with {len(show['episodes'])} episodes.\n\n"
+                    f"Structure:\n{structure}\n\n"
+                    f"Write a concise description."
+                )
+
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=EXPLORER_PROMPT,
+                        max_output_tokens=1024,
+                    ),
+                )
+
+                text = response.text.strip() if response.text else ""
+                if text:
+                    show_dir = NOTES_DIR / name
+                    show_dir.mkdir(parents=True, exist_ok=True)
+                    (show_dir / "show.md").write_text(text, encoding="utf-8")
+
+                status.completed += 1
+                status.push_event({
+                    "type": "completed",
+                    "show": name,
+                    "completed": status.completed,
+                    "total": status.total,
+                })
+
+            except Exception as e:
+                logger.warning("Explorer: failed to process %s: %s", name, e)
+                status.push_event({
+                    "type": "error",
+                    "message": f"Failed to process {name}: {e}",
+                })
+
+        status.push_event({
+            "type": "finished",
+            "completed": status.completed,
+            "total": status.total,
+        })
+
+    except Exception as e:
+        logger.error("Explorer: fatal error: %s", e)
+        status.error = str(e)
+        status.push_event({"type": "error", "message": str(e)})
+    finally:
+        status.running = False
+        status.current_show = ""
