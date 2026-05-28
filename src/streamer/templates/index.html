@@ -71,6 +71,19 @@
         </form>
     </section>
 
+    <section aria-label="Library Explorer">
+        <h2>Library Explorer</h2>
+        <p id="explorer-info">Generate AI-powered notes for your media library.</p>
+        <button type="button" id="explorer-start">Generate Notes</button>
+        <button type="button" id="explorer-force">Regenerate All</button>
+        <div id="explorer-progress" hidden>
+            <p><strong id="explorer-current"></strong></p>
+            <progress id="explorer-bar" value="0" max="100"></progress>
+            <p id="explorer-count"></p>
+        </div>
+        <div id="explorer-log" role="log" aria-live="polite" style="max-height:200px;overflow-y:auto;border:1px solid #ccc;padding:8px;margin-top:8px" hidden></div>
+    </section>
+
     <nav aria-label="Actions">
         <h2>Actions</h2>
         <ul>
@@ -194,6 +207,97 @@
     }).catch(function() {});
 
     setInterval(update, interval);
+
+    var explorerStart = document.getElementById("explorer-start");
+    var explorerForce = document.getElementById("explorer-force");
+    var explorerProgress = document.getElementById("explorer-progress");
+    var explorerBar = document.getElementById("explorer-bar");
+    var explorerCurrent = document.getElementById("explorer-current");
+    var explorerCount = document.getElementById("explorer-count");
+    var explorerLog = document.getElementById("explorer-log");
+    var explorerEventSource = null;
+
+    function explorerAddLog(text) {
+        explorerLog.hidden = false;
+        var div = document.createElement("div");
+        div.textContent = text;
+        explorerLog.appendChild(div);
+        explorerLog.scrollTop = explorerLog.scrollHeight;
+    }
+
+    function explorerConnect() {
+        if (explorerEventSource) explorerEventSource.close();
+        explorerEventSource = new EventSource("/api/explorer/progress");
+        explorerStart.disabled = true;
+        explorerForce.disabled = true;
+        explorerProgress.hidden = false;
+
+        explorerEventSource.onmessage = function(e) {
+            var data = JSON.parse(e.data);
+            if (data.type === "exploring") {
+                explorerCurrent.textContent = "Exploring: " + data.show;
+                explorerCount.textContent = data.completed + " / " + data.total;
+                explorerBar.max = data.total;
+                explorerBar.value = data.completed;
+            } else if (data.type === "completed") {
+                explorerCurrent.textContent = "Completed: " + data.show;
+                explorerCount.textContent = data.completed + " / " + data.total;
+                explorerBar.max = data.total;
+                explorerBar.value = data.completed;
+                explorerAddLog("Done: " + data.show);
+            } else if (data.type === "finished") {
+                explorerCurrent.textContent = "Finished!";
+                explorerCount.textContent = data.completed + " / " + data.total;
+                explorerBar.max = data.total;
+                explorerBar.value = data.total;
+                explorerStart.disabled = false;
+                explorerForce.disabled = false;
+                explorerEventSource.close();
+                explorerEventSource = null;
+                explorerAddLog("Exploration complete.");
+            } else if (data.type === "error") {
+                explorerAddLog("Error: " + data.message);
+            } else if (data.running) {
+                explorerCurrent.textContent = "Exploring: " + data.current_show;
+                explorerCount.textContent = data.completed + " / " + data.total;
+                explorerBar.max = data.total;
+                explorerBar.value = data.completed;
+            }
+        };
+        explorerEventSource.onerror = function() {
+            explorerStart.disabled = false;
+            explorerForce.disabled = false;
+            if (explorerEventSource) {
+                explorerEventSource.close();
+                explorerEventSource = null;
+            }
+        };
+    }
+
+    function explorerStartRun(force) {
+        fetch("/api/explorer/start", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({force: force})
+        }).then(function(r) { return r.json(); }).then(function(data) {
+            if (data.ok) {
+                explorerConnect();
+            } else {
+                explorerAddLog("Error: " + (data.error || "Unknown error"));
+            }
+        }).catch(function() {
+            explorerAddLog("Failed to start explorer.");
+        });
+    }
+
+    explorerStart.addEventListener("click", function() { explorerStartRun(false); });
+    explorerForce.addEventListener("click", function() { explorerStartRun(true); });
+
+    fetch("/api/explorer/status").then(function(r) { return r.json(); }).then(function(data) {
+        if (data.running) {
+            explorerConnect();
+        }
+    }).catch(function() {});
 })();
 </script>
 </body>

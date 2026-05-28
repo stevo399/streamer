@@ -1,3 +1,5 @@
+import json as json_mod
+import queue
 import subprocess
 import threading
 import time
@@ -6,12 +8,13 @@ from urllib.parse import quote
 
 import bcrypt
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, status
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from streamer.config import AUTH_PASSWORD_HASH, AUTH_USERNAME
+from streamer.explorer import ExplorerStatus, explore
 from streamer.scanner import Scanner
 from streamer.state import ServerState
 
@@ -115,6 +118,25 @@ class StateResponse(BaseModel):
     curator_next_check_at: int | None
 
 
+class ExplorerStartBody(BaseModel):
+    force: bool = False
+
+
+class ExplorerStartResponse(BaseModel):
+    ok: bool
+    total: int | None = None
+    error: str | None = None
+
+
+class ExplorerStatusResponse(BaseModel):
+    running: bool
+    total: int
+    completed: int
+    current_show: str
+    log: list[dict]
+    error: str | None
+
+
 def verify_credentials(
     credentials: HTTPBasicCredentials | None = Depends(_security),
 ) -> str:
@@ -149,6 +171,7 @@ def create_app(state=None, scanner=None, pipeline=None):
     app.state.server_state = _state
     app.state.scanner = _scanner
     app.state.pipeline = _pipeline
+    app.state.explorer_status = ExplorerStatus()
 
     # ── HTML routes ──────────────────────────────────────────────────────
 
@@ -463,6 +486,76 @@ def create_app(state=None, scanner=None, pipeline=None):
             for f in file_names
         ]
         return {"dirs": dirs, "files": files}
+
+    # ── Explorer ────────────────────────────────────────────────────────
+
+    @app.post(
+        "/api/explorer/start",
+        tags=["Explorer"],
+        summary="Start library exploration",
+        response_model=ExplorerStartResponse,
+    )
+    def api_explorer_start(
+        body: ExplorerStartBody = ExplorerStartBody(),
+        _user: str = Depends(verify_credentials),
+    ):
+        explorer_status = app.state.explorer_status
+        if explorer_status.running:
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "error": "Already running"},
+            )
+
+        def run():
+            explore(_scanner, explorer_status, force=body.force)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        time.sleep(0.05)
+
+        if explorer_status.error:
+            return {"ok": False, "error": explorer_status.error}
+        return {"ok": True, "total": explorer_status.total}
+
+    @app.get(
+        "/api/explorer/status",
+        tags=["Explorer"],
+        summary="Get explorer status",
+        response_model=ExplorerStatusResponse,
+    )
+    def api_explorer_status(_user: str = Depends(verify_credentials)):
+        return app.state.explorer_status.to_dict()
+
+    @app.get(
+        "/api/explorer/progress",
+        tags=["Explorer"],
+        summary="Stream explorer progress via SSE",
+    )
+    def api_explorer_progress():
+        explorer_status = app.state.explorer_status
+
+        def generate():
+            q = explorer_status.subscribe()
+            try:
+                yield f"data: {json_mod.dumps(explorer_status.to_dict())}\n\n"
+                while True:
+                    try:
+                        event = q.get(timeout=30)
+                        yield f"data: {json_mod.dumps(event)}\n\n"
+                        if event.get("type") == "finished":
+                            return
+                    except queue.Empty:
+                        yield ": keepalive\n\n"
+                    if not explorer_status.running and q.empty():
+                        return
+            finally:
+                explorer_status.unsubscribe(q)
+
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     # ── Streaming ────────────────────────────────────────────────────────
 

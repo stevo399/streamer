@@ -1,5 +1,5 @@
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -531,3 +531,51 @@ class TestControlPanelUpdates:
         resp = client.get("/")
         assert 'role="log"' in resp.text
         assert 'for="chat-input"' in resp.text
+
+
+class TestExplorerAPI:
+    def test_start_returns_error_without_notes_dir(self, api_client):
+        with patch("streamer.explorer.NOTES_DIR", None):
+            resp = api_client.post("/api/explorer/start", json={})
+        data = resp.json()
+        assert data["ok"] is False
+        assert "NOTES_DIR" in data["error"]
+
+    def test_start_begins_exploration(self, api_client, test_media_dir, tmp_path):
+        notes_dir = tmp_path / "notes"
+        notes_dir.mkdir()
+        with patch("streamer.explorer.NOTES_DIR", notes_dir), \
+             patch("streamer.explorer.GEMINI_API_KEY", "fake-key"), \
+             patch("streamer.explorer.genai") as mock_genai:
+            mock_response = MagicMock()
+            mock_response.text = "Description."
+            mock_client = MagicMock()
+            mock_client.models.generate_content.return_value = mock_response
+            mock_genai.Client.return_value = mock_client
+
+            resp = api_client.post("/api/explorer/start", json={})
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+
+    def test_start_returns_conflict_when_running(self, api_client, app_with_pipeline):
+        app_with_pipeline.state.explorer_status.running = True
+        resp = api_client.post("/api/explorer/start", json={})
+        assert resp.status_code == 409
+        data = resp.json()
+        assert data["ok"] is False
+        app_with_pipeline.state.explorer_status.running = False
+
+    def test_status_returns_current_state(self, api_client):
+        resp = api_client.get("/api/explorer/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "running" in data
+        assert "total" in data
+        assert "completed" in data
+
+    def test_progress_returns_sse_stream(self, api_client):
+        with api_client.stream("GET", "/api/explorer/progress") as resp:
+            assert resp.status_code == 200
+            assert "text/event-stream" in resp.headers["content-type"]
