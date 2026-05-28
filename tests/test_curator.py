@@ -9,8 +9,9 @@ from streamer.state import ServerState
 
 def _make_curator(state=None, scanner=None):
     state = state or ServerState()
-    scanner = scanner or MagicMock()
-    scanner.roots = []
+    if scanner is None:
+        scanner = MagicMock()
+        scanner.roots = []
     return Curator(state, scanner)
 
 
@@ -129,6 +130,70 @@ class TestHandleResponse:
         assert curator.state.queue[0] == "/path/to/pilot.mp3"
         assert curator.state.queue[1] == "/path/to/lawnmower.mp3"
         assert curator.state.curator_reason == "Marathon: Rick and Morty S1"
+
+    def test_fuzzy_title_filesystem_search(self, tmp_path):
+        root = tmp_path / "shows" / "Rick and Morty" / "season 02"
+        root.mkdir(parents=True)
+        schwifty = root / "02-05Get Schwifty.mp3"
+        schwifty.write_bytes(b"")
+        (root / "02-06The Ricks Must Be Crazy.mp3").write_bytes(b"")
+
+        scanner = MagicMock()
+        scanner.roots = [tmp_path / "shows"]
+        curator = _make_curator(scanner=scanner)
+
+        path_lookup = {
+            "Rick and Morty/season 02/02-05Get Schwifty": str(schwifty),
+        }
+        response = {
+            "action": "queue",
+            "tracks": ["Rick and Morty/season 02/Get Schwifty"],
+            "reason": "Get schwifty!",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 1
+        assert "Get Schwifty" in curator.state.queue[0]
+
+    def test_fuzzy_title_filesystem_various_formats(self, tmp_path):
+        root = tmp_path / "shows" / "Family Guy" / "season 04"
+        root.mkdir(parents=True)
+        quahog = root / "S04E01 - North by North Quahog.mp3"
+        quahog.write_bytes(b"")
+        (root / "S04E02 - Fast Times at Buddy Cianci Jr High.mp3").write_bytes(b"")
+
+        scanner = MagicMock()
+        scanner.roots = [tmp_path / "shows"]
+        curator = _make_curator(scanner=scanner)
+
+        path_lookup = {}
+        response = {
+            "action": "queue",
+            "tracks": ["Family Guy/season 04/North by North Quahog"],
+            "reason": "Classic",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 1
+        assert "North by North Quahog" in curator.state.queue[0]
+
+    def test_fuzzy_title_podcast_plain_name(self, tmp_path):
+        root = tmp_path / "podcasts" / "My Podcast"
+        root.mkdir(parents=True)
+        ep = root / "audio idiots.mp3"
+        ep.write_bytes(b"")
+
+        scanner = MagicMock()
+        scanner.roots = [tmp_path / "podcasts"]
+        curator = _make_curator(scanner=scanner)
+
+        path_lookup = {}
+        response = {
+            "action": "queue",
+            "tracks": ["My Podcast/audio idiots"],
+            "reason": "Great episode",
+        }
+        curator._handle_response(response, path_lookup)
+        assert len(curator.state.queue) == 1
+        assert "audio idiots" in curator.state.queue[0]
 
 
 class TestCuratorStatus:

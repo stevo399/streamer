@@ -428,7 +428,7 @@ class Curator:
             if model_ep.lower() == key_ep.lower():
                 return [path]
 
-        return []
+        return self._search_filesystem(model_ep, model_show, season_num)
 
     @staticmethod
     def _extract_episode_number(stem: str) -> int | None:
@@ -445,6 +445,61 @@ class Curator:
         m = re.search(r"(\d+)", stem)
         if m:
             return int(m.group(1))
+
+    def _search_filesystem(
+        self, title: str, show_hint: str | None = None, season_num: int | None = None,
+    ) -> list[str]:
+        import re
+        from pathlib import Path
+
+        from streamer.scanner import AUDIO_EXTENSIONS
+
+        words = re.findall(r"[a-zA-Z]+", title)
+        if not words or len("".join(words)) < 4:
+            return []
+
+        glob_pattern = "**/*" + "*".join(words) + "*"
+
+        for root in self.scanner.roots:
+            search_root = root
+            if show_hint:
+                for d in root.iterdir():
+                    if not d.is_dir():
+                        continue
+                    if show_hint in d.name.lower() or d.name.lower() in show_hint:
+                        search_root = d
+                        break
+
+            try:
+                proc = subprocess.run(
+                    ["rg", "--files", "--iglob", glob_pattern, str(search_root)],
+                    capture_output=True, text=True, timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+            matches = [
+                line.strip() for line in proc.stdout.splitlines()
+                if line.strip() and Path(line.strip()).suffix.lower() in AUDIO_EXTENSIONS
+            ]
+            if not matches:
+                continue
+
+            if season_num is not None:
+                filtered = [
+                    m for m in matches
+                    if any(
+                        re.search(r"(\d+)", p) and int(re.search(r"(\d+)", p).group(1)) == season_num
+                        for p in Path(m).parent.parts
+                        if "season" in p.lower() or re.fullmatch(r"[Ss]\d+", p)
+                    )
+                ]
+                if filtered:
+                    matches = filtered
+
+            return sorted(matches[:1])
+
+        return []
 
     def _handle_response(self, response: dict, path_lookup: dict[str, str]):
         action = response.get("action", "pass")
