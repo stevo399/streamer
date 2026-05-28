@@ -579,3 +579,21 @@ class TestExplorerAPI:
         with api_client.stream("GET", "/api/explorer/progress") as resp:
             assert resp.status_code == 200
             assert "text/event-stream" in resp.headers["content-type"]
+
+
+class TestExplorerUI:
+    def test_explorer_section_present(self, client):
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Library Explorer" in resp.text
+        assert 'id="explorer-start"' in resp.text
+        assert 'id="explorer-force"' in resp.text
+
+    def test_explorer_section_has_accessible_structure(self, client):
+        resp = client.get("/")
+        assert 'aria-label="Library Explorer"' in resp.text
+        assert 'id="explorer-log"' in resp.text
+
+    def test_explorer_progress_initially_hidden(self, client):
+        resp = client.get("/")
+        assert 'id="explorer-progress" hidden' in resp.text
