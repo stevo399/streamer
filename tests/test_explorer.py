@@ -63,10 +63,10 @@ class TestExplorerStatus:
 class TestCollectShows:
     def test_finds_entertainment_shows(self, tmp_path):
         ent = tmp_path / "entertainment"
-        show1 = ent / "Family Guy" / "season 01"
+        show1 = ent / "Family Guy"
         show1.mkdir(parents=True)
         (show1 / "01.mp3").write_bytes(b"")
-        show2 = ent / "Seinfeld" / "season 01"
+        show2 = ent / "Seinfeld"
         show2.mkdir(parents=True)
         (show2 / "01.mp3").write_bytes(b"")
 
@@ -84,10 +84,11 @@ class TestCollectShows:
 
         scanner = Scanner(roots=[pod])
         shows = _collect_shows(scanner)
-        assert len(shows) == 1
-        assert shows[0]["name"] == "My Podcast"
+        assert any(s["name"] == "My Podcast" for s in shows)
+        podcast = next(s for s in shows if s["name"] == "My Podcast")
+        assert podcast["type"] == "podcast"
 
-    def test_collects_season_and_episode_info(self, tmp_path):
+    def test_collects_audio_files_and_subdirs(self, tmp_path):
         ent = tmp_path / "entertainment"
         s1 = ent / "Show" / "season 01"
         s1.mkdir(parents=True)
@@ -99,16 +100,41 @@ class TestCollectShows:
 
         scanner = Scanner(roots=[ent])
         shows = _collect_shows(scanner)
-        assert len(shows) == 1
-        show = shows[0]
-        assert "season 01" in show["seasons"]
-        assert "season 02" in show["seasons"]
-        assert len(show["seasons"]["season 01"]) == 2
-        assert len(show["seasons"]["season 02"]) == 1
+        by_name = {s["name"]: s for s in shows}
+
+        assert "Show" in by_name
+        assert "season 01" in by_name["Show"]["subdirs"]
+        assert "season 02" in by_name["Show"]["subdirs"]
+
+        assert "Show/season 01" in by_name
+        assert by_name["Show/season 01"]["audio_files"] == ["01", "02"]
+        assert "Show/season 02" in by_name
+        assert by_name["Show/season 02"]["audio_files"] == ["01"]
+
+    def test_recursive_nested_dirs(self, tmp_path):
+        ent = tmp_path / "entertainment"
+        deep = ent / "Archive" / "2001"
+        deep.mkdir(parents=True)
+        (deep / "ep01.mp3").write_bytes(b"")
+
+        scanner = Scanner(roots=[ent])
+        shows = _collect_shows(scanner)
+        names = {s["name"] for s in shows}
+        assert "Archive" in names
+        assert "Archive/2001" in names
 
     def test_skips_empty_show_dirs(self, tmp_path):
         ent = tmp_path / "entertainment"
         (ent / "EmptyShow").mkdir(parents=True)
+        scanner = Scanner(roots=[ent])
+        shows = _collect_shows(scanner)
+        assert len(shows) == 0
+
+    def test_skips_dirs_with_no_audio_below(self, tmp_path):
+        ent = tmp_path / "entertainment"
+        nested = ent / "NoAudio" / "subdir"
+        nested.mkdir(parents=True)
+        (nested / "readme.txt").write_bytes(b"")
         scanner = Scanner(roots=[ent])
         shows = _collect_shows(scanner)
         assert len(shows) == 0
@@ -119,9 +145,9 @@ class TestExplore:
     @patch("streamer.explorer.genai")
     def test_explore_writes_show_md(self, mock_genai, tmp_path):
         ent = tmp_path / "entertainment"
-        s1 = ent / "Family Guy" / "season 01"
-        s1.mkdir(parents=True)
-        (s1 / "01.mp3").write_bytes(b"")
+        show = ent / "Family Guy"
+        show.mkdir(parents=True)
+        (show / "01.mp3").write_bytes(b"")
 
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()
@@ -146,11 +172,38 @@ class TestExplore:
 
     @patch("streamer.explorer.GEMINI_API_KEY", "fake-key")
     @patch("streamer.explorer.genai")
-    def test_explore_skips_existing(self, mock_genai, tmp_path):
+    def test_explore_writes_nested_notes(self, mock_genai, tmp_path):
         ent = tmp_path / "entertainment"
-        s1 = ent / "Family Guy" / "season 01"
+        s1 = ent / "Archive" / "2001"
         s1.mkdir(parents=True)
         (s1 / "01.mp3").write_bytes(b"")
+
+        notes_dir = tmp_path / "notes"
+        notes_dir.mkdir()
+
+        mock_response = MagicMock()
+        mock_response.text = "A description."
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
+        mock_genai.Client.return_value = mock_client
+
+        scanner = Scanner(roots=[ent])
+        status = ExplorerStatus()
+
+        with patch("streamer.explorer.NOTES_DIR", notes_dir):
+            explore(scanner, status)
+
+        assert (notes_dir / "Archive" / "show.md").exists()
+        assert (notes_dir / "Archive" / "2001" / "show.md").exists()
+        assert status.completed == 2
+
+    @patch("streamer.explorer.GEMINI_API_KEY", "fake-key")
+    @patch("streamer.explorer.genai")
+    def test_explore_skips_existing(self, mock_genai, tmp_path):
+        ent = tmp_path / "entertainment"
+        show = ent / "Family Guy"
+        show.mkdir(parents=True)
+        (show / "01.mp3").write_bytes(b"")
 
         notes_dir = tmp_path / "notes"
         show_notes = notes_dir / "Family Guy"
@@ -171,9 +224,9 @@ class TestExplore:
     @patch("streamer.explorer.genai")
     def test_explore_force_overwrites(self, mock_genai, tmp_path):
         ent = tmp_path / "entertainment"
-        s1 = ent / "Family Guy" / "season 01"
-        s1.mkdir(parents=True)
-        (s1 / "01.mp3").write_bytes(b"")
+        show = ent / "Family Guy"
+        show.mkdir(parents=True)
+        (show / "01.mp3").write_bytes(b"")
 
         notes_dir = tmp_path / "notes"
         show_notes = notes_dir / "Family Guy"
@@ -222,9 +275,9 @@ class TestExplore:
     def test_explore_continues_after_single_show_failure(self, mock_genai, tmp_path):
         ent = tmp_path / "entertainment"
         for name in ["ShowA", "ShowB"]:
-            s = ent / name / "season 01"
-            s.mkdir(parents=True)
-            (s / "01.mp3").write_bytes(b"")
+            d = ent / name
+            d.mkdir(parents=True)
+            (d / "01.mp3").write_bytes(b"")
 
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()
@@ -256,9 +309,9 @@ class TestExplore:
     @patch("streamer.explorer.genai")
     def test_explore_publishes_events(self, mock_genai, tmp_path):
         ent = tmp_path / "entertainment"
-        s1 = ent / "TestShow" / "season 01"
-        s1.mkdir(parents=True)
-        (s1 / "01.mp3").write_bytes(b"")
+        show = ent / "TestShow"
+        show.mkdir(parents=True)
+        (show / "01.mp3").write_bytes(b"")
 
         notes_dir = tmp_path / "notes"
         notes_dir.mkdir()

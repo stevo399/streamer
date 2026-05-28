@@ -64,47 +64,54 @@ def _collect_shows(scanner) -> list[dict]:
         if not root.exists():
             continue
         is_podcast = "podcast" in root.name.lower()
-        for show_dir in sorted(root.iterdir()):
-            if not show_dir.is_dir():
+        for dirpath in sorted(_walk_dirs(root)):
+            rel = dirpath.relative_to(root)
+            rel_str = str(rel).replace("\\", "/")
+
+            audio_files = sorted(
+                f.stem for f in dirpath.iterdir()
+                if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
+            )
+            subdirs = sorted(
+                d.name for d in dirpath.iterdir() if d.is_dir()
+            )
+
+            if not audio_files and not subdirs:
                 continue
-            if is_podcast:
-                episodes = sorted(
-                    f.stem for f in show_dir.rglob("*")
-                    if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
-                )
-                if episodes:
-                    shows.append({
-                        "name": show_dir.name,
-                        "type": "podcast",
-                        "seasons": {},
-                        "episodes": episodes,
-                    })
-            else:
-                seasons: dict[str, list[str]] = {}
-                for sub in sorted(show_dir.iterdir()):
-                    if sub.is_dir():
-                        eps = sorted(
-                            f.stem for f in sub.iterdir()
-                            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
-                        )
-                        if eps:
-                            seasons[sub.name] = eps
-                if seasons:
-                    all_eps = [ep for eps in seasons.values() for ep in eps]
-                    shows.append({
-                        "name": show_dir.name,
-                        "type": "entertainment",
-                        "seasons": seasons,
-                        "episodes": all_eps,
-                    })
+            if not audio_files and not _has_audio_below(dirpath):
+                continue
+
+            shows.append({
+                "name": rel_str,
+                "type": "podcast" if is_podcast else "entertainment",
+                "audio_files": audio_files,
+                "subdirs": subdirs,
+            })
     return shows
 
 
+def _walk_dirs(root: Path) -> list[Path]:
+    dirs = []
+    for item in sorted(root.iterdir()):
+        if item.is_dir():
+            dirs.append(item)
+            dirs.extend(_walk_dirs(item))
+    return dirs
+
+
+def _has_audio_below(dirpath: Path) -> bool:
+    for f in dirpath.rglob("*"):
+        if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS:
+            return True
+    return False
+
+
 EXPLORER_PROMPT = (
-    "You are a media library assistant. Given information about a show or podcast, "
-    "write a concise description covering: what it is about, its tone and themes, "
-    "and any particularly notable or fan-favorite episodes. If you don't recognize "
-    "the show, say so briefly rather than fabricating details."
+    "You are a media library assistant. Given a directory from a user's media "
+    "library, write a concise description covering: what the content is about, "
+    "its tone and themes, and any particularly notable or fan-favorite entries. "
+    "The full path is provided for context. If you don't recognize the content, "
+    "say so briefly rather than fabricating details."
 )
 
 
@@ -155,19 +162,22 @@ def explore(scanner, status: ExplorerStatus, force: bool = False):
             })
 
             try:
-                if show["seasons"]:
-                    season_info = []
-                    for sname, eps in sorted(show["seasons"].items()):
-                        season_info.append(f"  {sname}: {', '.join(eps)}")
-                    structure = "\n".join(season_info)
-                else:
-                    structure = ", ".join(show["episodes"][:50])
+                parts = []
+                if show["subdirs"]:
+                    parts.append(f"Subdirectories: {', '.join(show['subdirs'])}")
+                if show["audio_files"]:
+                    file_list = show["audio_files"][:50]
+                    parts.append(f"Audio files: {', '.join(file_list)}")
+                    if len(show["audio_files"]) > 50:
+                        parts.append(f"  ... and {len(show['audio_files']) - 50} more")
+                structure = "\n".join(parts) if parts else "(empty directory)"
 
                 prompt = (
-                    f"Here is a {'podcast' if show['type'] == 'podcast' else 'show'} "
-                    f"called \"{name}\" with {len(show['episodes'])} episodes.\n\n"
-                    f"Structure:\n{structure}\n\n"
-                    f"Write a concise description."
+                    f"Here is a directory from a media library.\n"
+                    f"Full path: {name}\n"
+                    f"Type: {'podcast' if show['type'] == 'podcast' else 'entertainment'}\n\n"
+                    f"Contents:\n{structure}\n\n"
+                    f"Write a concise description of this content."
                 )
 
                 response = client.models.generate_content(
