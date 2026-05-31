@@ -1,4 +1,7 @@
 import logging
+import os
+import random
+import time
 
 import uvicorn
 
@@ -10,6 +13,8 @@ from streamer.state import ServerState
 
 
 def main():
+    random.seed(os.getpid() ^ int(time.monotonic_ns()) ^ id(object()))
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(message)s",
