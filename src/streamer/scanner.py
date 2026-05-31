@@ -26,10 +26,8 @@ class Scanner:
     def _get_folder(self, file_path: Path) -> Path | None:
         for root in self.roots:
             try:
-                rel = file_path.relative_to(root)
-                if len(rel.parts) > 1:
-                    return root / rel.parts[0]
-                return root
+                file_path.relative_to(root)
+                return file_path.parent
             except ValueError:
                 continue
         return None
