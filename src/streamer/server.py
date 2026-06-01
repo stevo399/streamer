@@ -341,6 +341,10 @@ def create_app(state=None, scanner=None, pipeline=None):
             "curator_next_check_at": curator_status.get("next_check_at"),
         }
 
+    @app.get("/api/history", tags=["State"], summary="Recent play history")
+    def api_history(_user: str = Depends(verify_credentials)):
+        return {"history": _state.history}
+
     # ── JSON API ─────────────────────────────────────────────────────────
 
     @app.get("/api/now-playing", tags=["Tracks"], summary="Now playing with timing", response_model=NowPlayingResponse)

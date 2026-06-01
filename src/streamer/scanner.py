@@ -32,6 +32,17 @@ class Scanner:
                 continue
         return None
 
+    def _get_show(self, file_path: Path) -> Path | None:
+        for root in self.roots:
+            try:
+                rel = file_path.relative_to(root)
+                if rel.parts:
+                    return root / rel.parts[0]
+                return root
+            except ValueError:
+                continue
+        return None
+
     def scan_by_folder(self) -> dict[Path, list[Path]]:
         folders: dict[Path, list[Path]] = {}
         for root in self.roots:
@@ -53,20 +64,38 @@ class Scanner:
         if not folders:
             raise RuntimeError("No audio files found in media folders")
 
+        shows: dict[Path, list[Path]] = {}
+        for folder in folders:
+            show = self._get_show(folder)
+            if show:
+                shows.setdefault(show, []).append(folder)
+
         recent_set = set(recent[-30:]) if recent else set()
         last_folder = self._get_folder(Path(last_track)) if last_track else None
-        folder_list = list(folders.keys())
+        last_show = self._get_show(Path(last_track)) if last_track else None
+        show_list = list(shows.keys())
 
         for _ in range(200):
-            if last_folder and last_folder in folder_list and len(folder_list) > 1:
+            if last_show and last_show in show_list and len(show_list) > 1:
                 if random.random() > 0.15:
-                    candidates = [f for f in folder_list if f != last_folder]
+                    show_candidates = [s for s in show_list if s != last_show]
                 else:
-                    candidates = folder_list
+                    show_candidates = show_list
             else:
-                candidates = folder_list
+                show_candidates = show_list
 
-            folder = random.choice(candidates)
+            show = random.choice(show_candidates)
+            subfolders = shows[show]
+
+            if last_folder and last_folder in subfolders and len(subfolders) > 1:
+                if random.random() > 0.15:
+                    subfolder_candidates = [f for f in subfolders if f != last_folder]
+                else:
+                    subfolder_candidates = subfolders
+            else:
+                subfolder_candidates = subfolders
+
+            folder = random.choice(subfolder_candidates)
             picked = random.choice(folders[folder])
 
             if str(picked) not in recent_set:
