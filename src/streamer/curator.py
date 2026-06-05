@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 from google import genai
 from google.genai import types
@@ -78,7 +79,7 @@ class Curator:
         self._tracks_since_check = 0
         self._next_check_at = random.randint(3, 10)
         self._force_check = threading.Event()
-        self._chat_history: list[dict] = []
+        self._chat_history: list[dict] = self._load_chat_history()
 
     def start(self):
         self._running = True
@@ -102,6 +103,53 @@ class Curator:
     def get_chat_history(self) -> list[dict]:
         return list(self._chat_history)
 
+    @staticmethod
+    def _chat_history_path() -> Path | None:
+        if NOTES_DIR:
+            return NOTES_DIR / ".curator_chat.json"
+        return None
+
+    def _load_chat_history(self) -> list[dict]:
+        path = self._chat_history_path()
+        if path and path.is_file():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return []
+
+    def _save_chat_history(self) -> None:
+        path = self._chat_history_path()
+        if path:
+            try:
+                path.write_text(json.dumps(self._chat_history), encoding="utf-8")
+            except Exception:
+                pass
+
+    @staticmethod
+    def _search_files(query: str, path_lookup: dict[str, str]) -> list[str]:
+        import re
+        stop = frozenset({
+            'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can',
+            'was', 'one', 'our', 'out', 'has', 'have', 'had', 'his', 'how',
+            'play', 'queue', 'find', 'search', 'some', 'from', 'about',
+            'what', 'which', 'episode', 'episodes', 'show', 'podcast',
+            'please', 'want', 'like', 'listen', 'something', 'with', 'that',
+            'this', 'will', 'put', 'give', 'could',
+        })
+        words = [
+            w for w in re.findall(r'[a-zA-Z0-9]+', query.lower())
+            if len(w) >= 3 and w not in stop
+        ]
+        if not words:
+            return []
+        matches = []
+        for key in path_lookup:
+            key_lower = key.lower()
+            if all(w in key_lower for w in words):
+                matches.append(key)
+        return sorted(matches)[:25]
+
     def chat(self, message: str) -> dict:
         if CURATOR_CHAT_MODEL.lower() == "ollama":
             return self._chat_ollama(message)
@@ -120,10 +168,16 @@ class Curator:
         history = self.state.history[-20:]
         history_text = "\n".join(history) if history else "(nothing played yet)"
 
+        search_results = self._search_files(message, path_lookup)
         context_msg = (
             f"Media catalog:\n{catalog_text}\n\n"
             f"Recent play history:\n{history_text}"
         )
+        if search_results:
+            context_msg += (
+                f"\n\nEpisode search results matching the listener's message:\n"
+                + "\n".join(f"- {r}" for r in search_results)
+            )
 
         contents = [
             types.Content(role="user", parts=[types.Part(text=context_msg)]),
@@ -150,6 +204,7 @@ class Curator:
             return {"response": "Sorry, something went wrong.", "queued": []}
 
         self._chat_history.append({"role": "assistant", "content": response_text})
+        self._save_chat_history()
         queued = self._extract_and_queue(response_text, path_lookup)
         return {"response": response_text, "queued": queued}
 
@@ -169,10 +224,16 @@ class Curator:
         history = self.state.history[-20:]
         history_text = "\n".join(history) if history else "(nothing played yet)"
 
+        search_results = self._search_files(message, path_lookup)
         context_msg = (
             f"Media catalog:\n{catalog_text}\n\n"
             f"Recent play history:\n{history_text}"
         )
+        if search_results:
+            context_msg += (
+                f"\n\nEpisode search results matching the listener's message:\n"
+                + "\n".join(f"- {r}" for r in search_results)
+            )
 
         messages = [
             {"role": "system", "content": CURATOR_CHAT_PROMPT},
@@ -201,6 +262,7 @@ class Curator:
             return {"response": "Sorry, something went wrong.", "queued": []}
 
         self._chat_history.append({"role": "assistant", "content": response_text})
+        self._save_chat_history()
         queued = self._extract_and_queue(response_text, path_lookup)
         return {"response": response_text, "queued": queued}
 
@@ -287,17 +349,20 @@ class Curator:
             self.scanner,
             notes_dir=str(NOTES_DIR) if NOTES_DIR else None,
         )
-        logger.info("Curator: consulting Ollama (%d tracks in catalog)", len(path_lookup))
+        logger.info("Curator: consulting %s (%d tracks in catalog)", CURATOR_CHAT_MODEL, len(path_lookup))
 
         history = self.state.history[-20:]
         history_text = "\n".join(history) if history else "(nothing played yet)"
 
-        response = self._ask_ollama(catalog_text, history_text, force=force)
+        if CURATOR_CHAT_MODEL.lower() == "ollama":
+            response = self._ask_ollama(catalog_text, history_text, force=force)
+        else:
+            response = self._ask_gemini_check(catalog_text, history_text, force=force)
         if not isinstance(response, dict):
-            logger.warning("Curator: no valid response from Ollama")
+            logger.warning("Curator: no valid response")
             return
 
-        logger.info("Curator: Ollama response: %s", response.get("action", "unknown"))
+        logger.info("Curator: response: %s", response.get("action", "unknown"))
         self._handle_response(response, path_lookup)
 
     def _ensure_ollama_running(self) -> bool:
@@ -371,6 +436,36 @@ class Curator:
                 return json.loads(data["message"]["content"])
         except Exception as e:
             logger.warning("Curator: Ollama request failed: %s", e)
+            return None
+
+    def _ask_gemini_check(self, catalog_text: str, history_text: str, force: bool = False) -> dict | None:
+        if not GEMINI_API_KEY:
+            return None
+
+        user_message = (
+            f"Media catalog:\n{catalog_text}\n\n"
+            f"Recent history:\n{history_text}"
+        )
+        if force:
+            user_message += (
+                "\n\nThe listener just activated you. Pick something "
+                "interesting from the catalog and queue it. Do NOT pass."
+            )
+
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            response = client.models.generate_content(
+                model=CURATOR_CHAT_MODEL,
+                contents=user_message,
+                config=types.GenerateContentConfig(
+                    system_instruction=CURATOR_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    max_output_tokens=2048,
+                ),
+            )
+            return json.loads(response.text.strip()) if response.text else None
+        except Exception as e:
+            logger.warning("Curator: Gemini check failed: %s", e)
             return None
 
     def _resolve_tracks(self, track_id: str, path_lookup: dict[str, str]) -> list[str]:
