@@ -213,7 +213,7 @@ def decode_to_pcm(audio_bytes: bytes) -> bytes | None:
             ],
             input=audio_bytes,
             capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if proc.returncode != 0:
             log.warning(

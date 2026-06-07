@@ -117,7 +117,7 @@ class AudioPipeline:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         threading.Thread(target=self._run, daemon=True).start()
         threading.Thread(target=self._run_ogg_stdout, daemon=True).start()
@@ -279,7 +279,7 @@ class AudioPipeline:
                 capture_output=True,
                 text=True,
                 timeout=10,
-                creationflags=subprocess.CREATE_NO_WINDOW,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 return float(proc.stdout.strip())
@@ -383,7 +383,7 @@ class AudioPipeline:
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     def _write_to_ogg_encoder(self, data: bytes) -> None:

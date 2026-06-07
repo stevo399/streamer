@@ -610,7 +610,7 @@ def _stream_response(pipeline, codec_args, mimetype):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
         stop = threading.Event()
