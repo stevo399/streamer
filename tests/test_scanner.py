@@ -144,3 +144,35 @@ class TestListDirectory:
         dirs, files = scanner.list_directory(path)
         assert "Test Show" in dirs
         assert files == []
+
+
+class TestBookOrdering:
+    def _make_book(self, tmp_path):
+        book = tmp_path / "Book"
+        book.mkdir()
+        for name in ["chapter 10.mp3", "chapter 2.mp3", "chapter 1.mp3", "notes.txt"]:
+            (book / name).write_bytes(b"")
+        (book / "extra.m4b").write_bytes(b"")
+        return book
+
+    def test_m4b_is_an_audio_extension(self):
+        assert ".m4b" in AUDIO_EXTENSIONS
+
+    def test_list_directory_uses_natural_order(self, tmp_path):
+        book = self._make_book(tmp_path)
+        _, files = Scanner(roots=[tmp_path]).list_directory(book)
+        assert files == ["chapter 1.mp3", "chapter 2.mp3", "chapter 10.mp3", "extra.m4b"]
+
+    def test_next_in_folder_follows_natural_order(self, tmp_path):
+        book = self._make_book(tmp_path)
+        scanner = Scanner(roots=[tmp_path])
+        assert scanner.next_in_folder(str(book / "chapter 2.mp3")) == book / "chapter 10.mp3"
+
+    def test_next_in_folder_returns_none_at_end(self, tmp_path):
+        book = self._make_book(tmp_path)
+        scanner = Scanner(roots=[tmp_path])
+        assert scanner.next_in_folder(str(book / "extra.m4b")) is None
+
+    def test_next_in_folder_returns_none_for_unknown_file(self, tmp_path):
+        scanner = Scanner(roots=[tmp_path])
+        assert scanner.next_in_folder(str(tmp_path / "missing.mp3")) is None

@@ -32,6 +32,12 @@
     {% if files %}
     <section aria-label="Audio files">
         <h2>Audio Files</h2>
+        <form method="post" action="/queue/folder" id="folder-form">
+            <input type="hidden" name="folder" value="{{ folder_path }}">
+            <button type="submit" name="play_first" value="">Add All to Queue</button>
+            <button type="submit" name="play_first" value="true">Play Folder</button>
+        </form>
+        <p id="action-status" role="status" aria-live="polite"></p>
         <ul>
             {% for file in files %}
             <li><a href="{{ file.href }}">{{ file.name }}</a></li>
@@ -46,5 +52,28 @@
 
     <p><a href="/">Back to Control Panel</a></p>
 </main>
+<script>
+(function() {
+    var form = document.getElementById("folder-form");
+    if (!form) return;
+    // Queue the folder through the JSON API instead of reloading the page.
+    form.addEventListener("submit", function(e) {
+        e.preventDefault();
+        var status = document.getElementById("action-status");
+        fetch("/api/queue/folder", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                path: form.elements.folder.value,
+                play_first: e.submitter.value === "true"
+            })
+        }).then(function(r) { return r.json(); }).then(function(j) {
+            status.textContent = j.ok ? "Queued " + j.added + " file(s)." : "Nothing to queue.";
+        }).catch(function() {
+            status.textContent = "Request failed.";
+        });
+    });
+})();
+</script>
 </body>
 </html>

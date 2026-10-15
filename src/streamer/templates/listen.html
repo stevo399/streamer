@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Low-latency Listener - Streamer</title>
+</head>
+<body>
+<main>
+    <h1>Low-latency Listener</h1>
+    <p>Plays the live stream in this tab with a small buffer, so pause, skip and seek are heard almost immediately. Other players can keep using the OGG and MP3 streams.</p>
+
+    <section aria-label="Listener controls">
+        <h2>Listen</h2>
+        <button type="button" id="listen-toggle">Start Listening</button>
+        <label for="latency">Buffer</label>
+        <select id="latency">
+            <option value="0.15">Very low (150 ms)</option>
+            <option value="0.3" selected>Low (300 ms)</option>
+            <option value="0.6">Medium (600 ms)</option>
+            <option value="1.2">Safe (1.2 s)</option>
+        </select>
+        <p id="listen-status" role="status" aria-live="polite">Stopped.</p>
+        <p id="listen-buffer" aria-live="off"></p>
+    </section>
+
+    <p><a href="/">Back to Control Panel</a></p>
+</main>
+<script>
+(function() {
+    var SAMPLE_RATE = 44100;
+    var toggle = document.getElementById("listen-toggle");
+    var latency = document.getElementById("latency");
+    var statusEl = document.getElementById("listen-status");
+    var bufferEl = document.getElementById("listen-buffer");
+
+    var ctx = null;
+    var reader = null;
+    var nextTime = 0;
+    var leftover = new Uint8Array(0);
+    var meterTimer = null;
+    var running = false;
+
+    function target() { return parseFloat(latency.value) || 0.3; }
+
+    function schedule(bytes) {
+        // Join with bytes left over from the previous read so frames stay whole.
+        var joined = new Uint8Array(leftover.length + bytes.length);
+        joined.set(leftover, 0);
+        joined.set(bytes, leftover.length);
+        var frames = Math.floor(joined.length / 4);
+        leftover = joined.slice(frames * 4);
+        if (frames === 0) return;
+
+        var ahead = nextTime - ctx.currentTime;
+        if (ahead > target() + 0.15) return;   // drifted ahead of the server: drop to catch up
+        if (ahead < 0.02) {                   // underrun: restart with a fresh buffer
+            nextTime = ctx.currentTime + target();
+        }
+
+        var samples = new Int16Array(joined.buffer, 0, frames * 2);
+        var buffer = ctx.createBuffer(2, frames, SAMPLE_RATE);
+        var left = buffer.getChannelData(0);
+        var right = buffer.getChannelData(1);
+        for (var i = 0; i < frames; i++) {
+            left[i] = samples[i * 2] / 32768;
+            right[i] = samples[i * 2 + 1] / 32768;
+        }
+        var source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.start(nextTime);
+        nextTime += frames / SAMPLE_RATE;
+    }
+
+    function pump() {
+        reader.read().then(function(result) {
+            if (result.done || !running) {
+                if (running) stop("Connection lost. Press Start Listening to reconnect.");
+                return;
+            }
+            schedule(result.value);
+            pump();
+        }).catch(function() {
+            if (running) stop("Connection lost. Press Start Listening to reconnect.");
+        });
+    }
+
+    function start() {
+        running = true;
+        leftover = new Uint8Array(0);
+        ctx = new (window.AudioContext || window.webkitAudioContext)({sampleRate: SAMPLE_RATE, latencyHint: "interactive"});
+        nextTime = ctx.currentTime + target();
+        toggle.textContent = "Stop Listening";
+        statusEl.textContent = "Connecting...";
+        fetch("/stream.pcm").then(function(r) {
+            if (!r.ok || !r.body) throw new Error("no stream");
+            reader = r.body.getReader();
+            statusEl.textContent = "Listening.";
+            meterTimer = setInterval(function() {
+                var ms = Math.max(0, Math.round((nextTime - ctx.currentTime) * 1000));
+                bufferEl.textContent = "Buffered: " + ms + " ms";
+            }, 500);
+            pump();
+        }).catch(function() {
+            stop("Could not connect to the stream.");
+        });
+    }
+
+    function stop(message) {
+        running = false;
+        clearInterval(meterTimer);
+        if (reader) { reader.cancel().catch(function() {}); reader = null; }
+        if (ctx) { ctx.close().catch(function() {}); ctx = null; }
+        toggle.textContent = "Start Listening";
+        bufferEl.textContent = "";
+        statusEl.textContent = message || "Stopped.";
+    }
+
+    toggle.addEventListener("click", function() {
+        if (running) stop(); else start();
+    });
+    latency.addEventListener("change", function() {
+        if (running) { stop(); start(); }
+    });
+})();
+</script>
+</body>
+</html>

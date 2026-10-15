@@ -1,3 +1,4 @@
+import json
 import subprocess
 import threading
 import time
@@ -6,6 +7,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from streamer.curator import Curator
 
 BYTES_PER_SECOND = 44100 * 2 * 2
+BYTES_PER_FRAME = 2 * 2
 
 
 def _parse_ogg_pages(data: bytes) -> list[tuple[int, int]]:
@@ -90,7 +92,7 @@ class AudioPipeline:
         self._running = False
         self._current_decoder = None
         self._ogg_encoder: subprocess.Popen | None = None
-        self._pending_action: tuple[str, str | None] | None = None
+        self._pending_action: tuple[str, str | float | None] | None = None
         self._action_lock = threading.Lock()
         self._dj_cancel = threading.Event()
         self._last_track: str | None = None
@@ -102,6 +104,8 @@ class AudioPipeline:
         self._prefetch_for: str | None = None    # next track the prefetched clip is keyed to
         self._pre_selected_random: str | None = None  # random pick stored for reuse
         self._track_duration: float | None = None
+        self._track_chapters: list[dict] = []
+        self._track_offset_bytes: int = 0
         self._track_bytes_written: int = 0
 
     def start(self):
@@ -162,14 +166,43 @@ class AudioPipeline:
         if self._current_decoder:
             self._current_decoder.kill()
 
-    def _consume_action(self) -> tuple[str, str | None] | None:
+    def request_seek(self, position: float) -> bool:
+        if position < 0:
+            return False
+        if not self.state.current_track:
+            return False
+
+        with self._action_lock:
+            self._pending_action = ("seek", position)
+        self._dj_cancel.set()
+        if self._current_decoder:
+            self._current_decoder.kill()
+        return True
+
+    def request_pause(self) -> bool:
+        if not self.state.current_track:
+            return False
+        self.state.paused = True
+        return True
+
+    def request_resume(self) -> bool:
+        if not self.state.current_track:
+            return False
+        self.state.paused = False
+        return True
+
+    def _consume_action(self) -> tuple[str, str | float | None] | None:
         with self._action_lock:
             action = self._pending_action
             self._pending_action = None
             return action
 
-    def _get_next_track(self) -> str:
+    def _get_next_track(self) -> tuple[str, float | None, bool]:
         action = self._consume_action()
+
+        if action is None and self.state.loop_current and self.state.current_track:
+            # Track ended on its own: replay it. Skip/previous/play still move on.
+            return self.state.current_track, None, True
 
         if action:
             kind, target = action
@@ -178,19 +211,34 @@ class AudioPipeline:
                 self._pre_selected_random = None
                 track = self.state.go_previous()
                 if track:
-                    return track
+                    return track, None, False
             elif kind == "play":
                 self._pre_selected_random = None
                 self.state.play_now(target)
-                return target
+                return target, None, False
+            elif kind == "seek":
+                current = self.state.current_track
+                if current:
+                    return current, float(target), True
             # "next": fall through and use the pre-selected track so the
             # clip that was generated during the previous track still matches.
 
+        finished = self.state.current_track
         track = self.state.advance()
         if track:
             # A queued track was popped — pre-selection is no longer relevant.
             self._pre_selected_random = None
-            return track
+            return track, None, False
+
+        if self.state.book_mode and finished:
+            # Book mode: continue with the next file in the folder instead of shuffling.
+            following = self.scanner.next_in_folder(finished)
+            if following:
+                self._pre_selected_random = None
+                self.state.current_track = str(following)
+                return str(following), None, False
+            # End of the book: fall back to shuffle.
+            self.state.book_mode = False
 
         # Reuse the random pick that _start_clip_prefetch already made so
         # the generated clip is keyed to the same track we are about to play.
@@ -198,14 +246,14 @@ class AudioPipeline:
             track = self._pre_selected_random
             self._pre_selected_random = None
             self.state.current_track = track
-            return track
+            return track, None, False
 
         picked = self.scanner.pick_random(
             recent=self.state.history,
             last_track=self._last_track,
         )
         self.state.current_track = str(picked)
-        return str(picked)
+        return str(picked), None, False
 
     # ── DJ clip prefetch ──────────────────────────────────────────────────────
 
@@ -224,6 +272,11 @@ class AudioPipeline:
         if q:
             # Queue-based: _get_next_track will call state.advance() → same track.
             next_hint = q[0]
+        elif self.state.book_mode:
+            following = self.scanner.next_in_folder(current_track)
+            if following is None:
+                return
+            next_hint = str(following)
         else:
             try:
                 picked = self.scanner.pick_random(
@@ -287,49 +340,128 @@ class AudioPipeline:
             pass
         return None
 
+    def _probe_chapters(self, path: str) -> list[dict]:
+        """Return [{"title", "start"}] for files with embedded chapters (e.g. M4B)."""
+        try:
+            proc = subprocess.run(
+                [
+                    "ffprobe", "-v", "error",
+                    "-show_chapters", "-of", "json",
+                    path,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if proc.returncode != 0:
+                return []
+            chapters = json.loads(proc.stdout).get("chapters", [])
+            return [
+                {
+                    "title": c.get("tags", {}).get("title") or f"Chapter {i + 1}",
+                    "start": float(c["start_time"]),
+                }
+                for i, c in enumerate(chapters)
+            ]
+        except Exception:
+            return []
+
+    def _probe_duration_async(self, path: str) -> None:
+        duration = self._probe_duration(path)
+        if duration is None:
+            return
+        if self._current_decoder is None:
+            return
+        if self.state.current_track != path:
+            return
+        self._track_duration = duration
+        self.state.notify_change()
+        chapters = self._probe_chapters(path)
+        if chapters and self.state.current_track == path:
+            self._track_chapters = chapters
+            self.state.notify_change()
+
+    def get_chapters(self) -> list[dict]:
+        return list(self._track_chapters)
+
+    def _current_chapter(self, elapsed: float) -> tuple[int, str] | None:
+        current = None
+        for i, chapter in enumerate(self._track_chapters):
+            if chapter["start"] <= elapsed:
+                current = (i, chapter["title"])
+        return current
+
     def get_playback_info(self) -> dict:
-        elapsed = self._track_bytes_written / BYTES_PER_SECOND
+        elapsed = (self._track_offset_bytes + self._track_bytes_written) / BYTES_PER_SECOND
         duration = self._track_duration
+        chapter = self._current_chapter(elapsed)
         return {
             "elapsed": round(elapsed, 1),
             "duration": round(duration, 1) if duration else None,
             "remaining": round(duration - elapsed, 1) if duration else None,
+            "paused": self.state.paused,
+            "chapter": chapter[1] if chapter else None,
+            "chapter_index": chapter[0] if chapter else None,
         }
 
     # ── Playback ──────────────────────────────────────────────────────────────
 
     def _run(self):
         while self._running:
-            track = self._get_next_track()
+            track, seek_position, resume_same_track = self._get_next_track()
 
-            # Play the pre-generated DJ clip for this transition if it's ready.
-            # _dj_cancel may be set from killing the previous decoder — clear it
-            # so _play_clip_pcm can be interrupted by the NEXT skip, not this one.
-            if self.state.dj_enabled and self._last_track:
+            if resume_same_track:
+                # Seek within the current track. Do not play transition audio,
+                # but clear the cancel flag so future DJ clips can run again.
                 self._dj_cancel.clear()
-                pcm = self._consume_prefetch(track)
-                if pcm:
-                    self._play_clip_pcm(pcm)
+            else:
+                # Play the pre-generated DJ clip for this transition if it's ready.
+                # _dj_cancel may be set from killing the previous decoder — clear it
+                # so _play_clip_pcm can be interrupted by the NEXT skip, not this one.
+                if self.state.dj_enabled and self._last_track:
+                    self._dj_cancel.clear()
+                    pcm = self._consume_prefetch(track)
+                    if pcm:
+                        self._play_clip_pcm(pcm)
 
-            announcement = self.state.consume_curator_announcement()
-            if announcement:
-                self._play_curator_announcement(announcement)
+                announcement = self.state.consume_curator_announcement()
+                if announcement:
+                    self._play_curator_announcement(announcement)
 
-            decoder = self._start_decoder(track)
+            decoder = self._start_decoder(track, seek_position=seek_position)
             self._current_decoder = decoder
-            self._track_duration = self._probe_duration(track)
+            self._track_offset_bytes = int((seek_position or 0.0) * BYTES_PER_SECOND)
             self._track_bytes_written = 0
+            self._track_duration = None
+            if not resume_same_track:
+                self._track_chapters = []
+            self.state.notify_change()
+            threading.Thread(
+                target=self._probe_duration_async,
+                args=(track,),
+                daemon=True,
+            ).start()
 
             # While this track plays, generate the clip for the next transition.
-            if self.state.dj_enabled:
+            if self.state.dj_enabled and not resume_same_track:
                 self._start_clip_prefetch(track)
 
             track_start = time.monotonic()
 
             while self._running:
+                if self.state.paused:
+                    time.sleep(0.1)
+                    track_start += 0.1
+                    continue
+
                 chunk = decoder.stdout.read(4096)
                 if not chunk:
                     break
+                # Keep PCM frame-aligned so raw-PCM listeners never swap channels.
+                chunk = chunk[:len(chunk) - len(chunk) % BYTES_PER_FRAME]
+                if not chunk:
+                    continue
                 self.pcm_buffer.write(chunk)
                 self._write_to_ogg_encoder(chunk)
                 self._track_bytes_written += len(chunk)
@@ -374,13 +506,17 @@ class AudioPipeline:
         except Exception:
             pass
 
-    def _start_decoder(self, path: str) -> subprocess.Popen:
+    def _start_decoder(self, path: str, seek_position: float | None = None) -> subprocess.Popen:
+        cmd = ["ffmpeg", "-v", "error"]
+        if seek_position is not None and seek_position > 0:
+            cmd.extend(["-ss", str(seek_position)])
+        cmd.extend([
+            "-i", path,
+            "-f", "s16le", "-acodec", "pcm_s16le",
+            "-ar", "44100", "-ac", "2", "pipe:1",
+        ])
         return subprocess.Popen(
-            [
-                "ffmpeg", "-v", "error", "-i", path,
-                "-f", "s16le", "-acodec", "pcm_s16le",
-                "-ar", "44100", "-ac", "2", "pipe:1",
-            ],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

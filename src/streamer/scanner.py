@@ -1,12 +1,21 @@
 import random
+import re
 from pathlib import Path
 
 from streamer.config import MEDIA_ROOTS
 
 AUDIO_EXTENSIONS = frozenset({
     ".mp3", ".ogg", ".wav", ".flac",
-    ".m4a", ".wma", ".aac", ".opus", ".m4r",
+    ".m4a", ".m4b", ".wma", ".aac", ".opus", ".m4r",
 })
+
+
+def natural_key(name: str) -> list:
+    """Sort key that orders "chapter 2" before "chapter 10"."""
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", name)
+    ]
 
 
 class Scanner:
@@ -124,9 +133,25 @@ class Scanner:
         return None
 
     def list_directory(self, path: Path) -> tuple[list[str], list[str]]:
-        dirs = sorted(d.name for d in path.iterdir() if d.is_dir())
+        dirs = sorted((d.name for d in path.iterdir() if d.is_dir()), key=natural_key)
         files = sorted(
-            f.name for f in path.iterdir()
-            if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
+            (
+                f.name for f in path.iterdir()
+                if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS
+            ),
+            key=natural_key,
         )
         return dirs, files
+
+    def next_in_folder(self, track: str) -> Path | None:
+        """Return the file after track in its folder (natural order), or None at the end."""
+        path = Path(track)
+        if not path.parent.is_dir():
+            return None
+        _, files = self.list_directory(path.parent)
+        if path.name not in files:
+            return None
+        index = files.index(path.name)
+        if index + 1 < len(files):
+            return path.parent / files[index + 1]
+        return None

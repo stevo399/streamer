@@ -4,21 +4,54 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Streamer</title>
+    <style>
+        .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    </style>
 </head>
 <body>
 <main>
+    <div id="announce" class="visually-hidden" role="status" aria-live="polite"></div>
     <h1>Now Playing</h1>
     <p aria-live="polite" id="now-playing"><strong id="track-name">{{ track_name }}</strong> &mdash; <span id="track-path">{{ track_path }}</span></p>
     <p aria-live="off" id="track-timing"></p>
 
     <section aria-label="Playback controls">
         <h2>Controls</h2>
-        <form method="post" action="/previous" style="display:inline">
-            <button type="submit">Previous</button>
+        <form method="post" id="transport-form">
+            <button type="submit" id="previous-button" formaction="/previous">Previous</button>
+            <button type="submit" id="pause-toggle" formaction="{{ '/resume' if paused else '/pause' }}">{% if paused %}Resume Stream{% else %}Pause Stream{% endif %}</button>
+            <button type="submit" id="next-button" formaction="/next">Next</button>
         </form>
-        <form method="post" action="/next" style="display:inline">
-            <button type="submit">Next</button>
+        <button type="button" id="shortcuts-open" aria-haspopup="dialog">Keyboard shortcuts (?)</button>
+        <p id="pause-status">Playback is <strong id="pause-state">{{ "paused" if paused else "running" }}</strong>.</p>
+        <div style="display:inline-flex;gap:0.5rem;align-items:center;margin-top:0.5rem">
+            <label for="seek-amount">Seek amount</label>
+            <select id="seek-amount" aria-label="Seek amount">
+                <option value="15">15s</option>
+                <option value="30">30s</option>
+                <option value="60">1m</option>
+                <option value="300">5m</option>
+                <option value="600">10m</option>
+                <option value="1800">30m</option>
+                <option value="3600">1h</option>
+            </select>
+            <button type="button" id="seek-back">« Back</button>
+            <button type="button" id="seek-forward">Forward »</button>
+        </div>
+        <div style="margin-top:0.5rem">
+            <label for="seek-position">Position</label>
+            <input type="range" id="seek-position" min="0" max="0" step="1" value="0" disabled>
+        </div>
+        <div id="chapter-controls" style="margin-top:0.5rem" hidden>
+            <label for="chapter-select">Chapter</label>
+            <select id="chapter-select"></select>
+        </div>
+        <form id="seek-form" method="post" action="/seek" style="margin-top:0.5rem">
+            <label for="seek-time">Go to time (m:ss or seconds)</label>
+            <input type="text" id="seek-time" name="position" autocomplete="off" inputmode="numeric">
+            <button type="submit" id="seek-go">Go</button>
         </form>
+        <p id="action-status" role="status" aria-live="polite"></p>
     </section>
 
     <section aria-label="Queue" id="queue-section">
@@ -30,7 +63,7 @@
             {% for item in queue %}
             <li>
                 <strong>{{ item.name }}</strong> &mdash; {{ item.path }}
-                <form method="post" action="/queue/remove" style="display:inline">
+                <form method="post" action="/queue/remove" data-queue-index="{{ loop.index0 }}" style="display:inline">
                     <input type="hidden" name="index" value="{{ loop.index0 }}">
                     <button type="submit" aria-label="Remove {{ item.name }} from queue">Remove</button>
                 </form>
@@ -43,19 +76,17 @@
         </div>
     </section>
 
-    <section aria-label="AI DJ">
-        <h2>AI DJ</h2>
-        <p>DJ is currently <strong id="dj-status">{{ "on" if dj_enabled else "off" }}</strong>.</p>
-        <form method="post" action="/dj/toggle">
-            <button type="submit" id="dj-toggle">Turn {{ "off" if dj_enabled else "on" }}</button>
-        </form>
-    </section>
-
-    <section aria-label="AI Curator">
-        <h2>AI Curator</h2>
-        <p>Curator is currently <strong id="curator-status">{{ "on" if curator_enabled else "off" }}</strong>.</p>
-        <form method="post" action="/curator/toggle">
-            <button type="submit" id="curator-toggle">Turn {{ "off" if curator_enabled else "on" }}</button>
+    <section aria-label="Options">
+        <h2>Options</h2>
+        <form method="post" id="options-form">
+            <p>Loop current track is <strong id="loop-status">{{ "on" if loop_current else "off" }}</strong>.
+                <button type="submit" id="loop-toggle" formaction="/loop/toggle">Turn {{ "off" if loop_current else "on" }}</button></p>
+            <p>Book reading mode (play the folder in order, no shuffle) is <strong id="book-status">{{ "on" if book_mode else "off" }}</strong>.
+                <button type="submit" id="book-toggle" formaction="/book/toggle">Turn {{ "off" if book_mode else "on" }}</button></p>
+            <p>AI DJ is <strong id="dj-status">{{ "on" if dj_enabled else "off" }}</strong>.
+                <button type="submit" id="dj-toggle" formaction="/dj/toggle">Turn {{ "off" if dj_enabled else "on" }}</button></p>
+            <p>AI Curator is <strong id="curator-status">{{ "on" if curator_enabled else "off" }}</strong>.
+                <button type="submit" id="curator-toggle" formaction="/curator/toggle">Turn {{ "off" if curator_enabled else "on" }}</button></p>
         </form>
         <p id="curator-check-info" hidden>Tracks until next check: <strong id="curator-tracks-remaining">-</strong></p>
         <button type="button" id="curator-force" hidden>Force Check</button>
@@ -89,18 +120,51 @@
         <ul>
             <li><a href="/browse/">Browse Files</a></li>
             <li><a href="/stream.ogg">Listen to Stream</a></li>
+            <li><a href="/listen">Low-latency Listener</a></li>
         </ul>
     </nav>
 </main>
+<dialog id="shortcuts-dialog" aria-labelledby="shortcuts-title">
+    <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+    <p>Shortcuts are ignored while typing in a text field.</p>
+    <ul>
+        <li><kbd>K</kbd>: pause or resume</li>
+        <li><kbd>Shift+N</kbd>: next track</li>
+        <li><kbd>Shift+P</kbd>: previous track</li>
+        <li><kbd>J</kbd>: seek back by the seek amount</li>
+        <li><kbd>L</kbd>: seek forward by the seek amount</li>
+        <li><kbd>1</kbd> to <kbd>7</kbd>: set the seek amount to 15s, 30s, 1m, 5m, 10m, 30m, or 1h</li>
+        <li><kbd>R</kbd>: toggle loop current track</li>
+        <li><kbd>?</kbd>: open this dialog</li>
+        <li><kbd>Esc</kbd>: close this dialog</li>
+    </ul>
+    <form method="dialog">
+        <button type="submit">Close</button>
+    </form>
+</dialog>
 <script>
 (function() {
-    var interval = 5000;
+    var current = {paused: {{ "true" if paused else "false" }}, elapsed: null, duration: null};
+    var syncedAt = performance.now();
+    var scrubbing = false;
+    var seekTimer = null;
+    var chapterKey = "";
 
     function formatTime(secs) {
         if (secs == null) return "--:--";
-        var mins = Math.floor(secs / 60);
+        var hrs = Math.floor(secs / 3600);
+        var mins = Math.floor((secs % 3600) / 60);
         var sec = Math.floor(secs % 60);
-        return mins + ":" + (sec < 10 ? "0" : "") + sec;
+        var pad = function(n) { return (n < 10 ? "0" : "") + n; };
+        return hrs > 0 ? hrs + ":" + pad(mins) + ":" + pad(sec) : mins + ":" + pad(sec);
+    }
+
+    function parseTime(text) {
+        var parts = text.trim().split(":");
+        if (parts.length > 3 || parts.some(function(p) { return p === "" || isNaN(Number(p)); })) return null;
+        var total = 0;
+        for (var i = 0; i < parts.length; i++) total = total * 60 + Number(parts[i]);
+        return total >= 0 ? total : null;
     }
 
     function esc(t) {
@@ -109,60 +173,305 @@
         return d.innerHTML;
     }
 
-    function update() {
-        fetch("/api/state").then(function(r) { return r.json(); }).then(function(s) {
-            document.getElementById("track-name").textContent = s.track_name;
-            document.getElementById("track-path").textContent = s.track_path;
+    var announceTimer = null;
+    function announce(text) {
+        var region = document.getElementById("announce");
+        region.textContent = "";
+        clearTimeout(announceTimer);
+        // Set after a tick so repeating the same message is announced again.
+        announceTimer = setTimeout(function() { region.textContent = text; }, 50);
+    }
 
-            var timing = document.getElementById("track-timing");
-            timing.textContent = formatTime(s.elapsed) + " / " + formatTime(s.duration);
+    function setStatus(text) {
+        document.getElementById("action-status").textContent = text;
+    }
 
-            var reason = document.getElementById("curator-reason");
-            var reasonText = document.getElementById("curator-reason-text");
-            if (s.curator_reason) {
-                reasonText.textContent = s.curator_reason;
-                reason.hidden = false;
-            } else {
-                reason.hidden = true;
+    function api(method, url, body) {
+        var opts = {method: method};
+        if (body !== undefined) {
+            opts.headers = {"Content-Type": "application/json"};
+            opts.body = JSON.stringify(body);
+        }
+        return fetch(url, opts).then(function(r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+        });
+    }
+
+    // Run an API action; the resulting state change arrives over the event stream.
+    function act(method, url, body, failure) {
+        return api(method, url, body).then(function(j) {
+            setStatus(j.ok === false ? failure : "");
+            return j;
+        }).catch(function() {
+            setStatus("Request failed.");
+        });
+    }
+
+    function currentElapsed() {
+        if (current.elapsed == null) return null;
+        var e = current.elapsed;
+        if (!current.paused) e += (performance.now() - syncedAt) / 1000;
+        return current.duration != null ? Math.min(e, current.duration) : e;
+    }
+
+    function renderTiming() {
+        var elapsed = currentElapsed();
+        document.getElementById("track-timing").textContent = formatTime(elapsed) + " / " + formatTime(current.duration);
+        var seekPosition = document.getElementById("seek-position");
+        if (!scrubbing && document.activeElement !== seekPosition && elapsed != null) {
+            seekPosition.value = String(Math.floor(elapsed));
+        }
+    }
+
+    function loadChapters() {
+        api("GET", "/api/chapters").then(function(data) {
+            var select = document.getElementById("chapter-select");
+            select.innerHTML = "";
+            for (var i = 0; i < data.chapters.length; i++) {
+                var option = document.createElement("option");
+                option.value = String(data.chapters[i].start);
+                option.textContent = data.chapters[i].title;
+                select.appendChild(option);
             }
-
-            var qc = document.getElementById("queue-content");
-            if (s.queue.length === 0) {
-                qc.innerHTML = "<p>Queue is empty. A random file will be chosen next.</p>";
-            } else {
-                var html = "<ol>";
-                for (var i = 0; i < s.queue.length; i++) {
-                    html += "<li><strong>" + esc(s.queue[i].name) + "</strong> &mdash; " + esc(s.queue[i].path)
-                        + ' <form method="post" action="/queue/remove" style="display:inline">'
-                        + '<input type="hidden" name="index" value="' + i + '">'
-                        + '<button type="submit" aria-label="Remove ' + esc(s.queue[i].name) + ' from queue">Remove</button>'
-                        + "</form></li>";
-                }
-                html += "</ol>";
-                qc.innerHTML = html;
-            }
-
-            document.getElementById("dj-status").textContent = s.dj_enabled ? "on" : "off";
-            document.getElementById("dj-toggle").textContent = s.dj_enabled ? "Turn off" : "Turn on";
-            document.getElementById("curator-status").textContent = s.curator_enabled ? "on" : "off";
-            document.getElementById("curator-toggle").textContent = s.curator_enabled ? "Turn off" : "Turn on";
-
-            var checkInfo = document.getElementById("curator-check-info");
-            var forceBtn = document.getElementById("curator-force");
-            if (s.curator_enabled && s.curator_next_check_at != null) {
-                var remaining = s.curator_next_check_at - (s.curator_tracks_since_check || 0);
-                document.getElementById("curator-tracks-remaining").textContent = remaining;
-                checkInfo.hidden = false;
-                forceBtn.hidden = false;
-            } else {
-                checkInfo.hidden = true;
-                forceBtn.hidden = true;
-            }
+            document.getElementById("chapter-controls").hidden = data.chapters.length === 0;
         }).catch(function() {});
     }
 
+    function render(s) {
+        current = {paused: s.paused, elapsed: s.elapsed, duration: s.duration};
+        syncedAt = performance.now();
+
+        document.getElementById("track-name").textContent = s.track_name;
+        document.getElementById("track-path").textContent = s.track_path;
+
+        var seekPosition = document.getElementById("seek-position");
+        if (s.duration != null) {
+            seekPosition.max = String(Math.floor(s.duration));
+        }
+        renderTiming();
+
+        var key = s.track_path + "|" + s.chapter_count;
+        if (key !== chapterKey) {
+            chapterKey = key;
+            loadChapters();
+        }
+        var chapterSelect = document.getElementById("chapter-select");
+        if (s.chapter_index != null && document.activeElement !== chapterSelect) {
+            chapterSelect.selectedIndex = s.chapter_index;
+        }
+        chapterSelect.disabled = !!s.paused;
+
+        var reason = document.getElementById("curator-reason");
+        var reasonText = document.getElementById("curator-reason-text");
+        if (s.curator_reason) {
+            reasonText.textContent = s.curator_reason;
+            reason.hidden = false;
+        } else {
+            reason.hidden = true;
+        }
+
+        var qc = document.getElementById("queue-content");
+        if (s.queue.length === 0) {
+            qc.innerHTML = "<p>Queue is empty. A random file will be chosen next.</p>";
+        } else {
+            var html = "<ol>";
+            for (var i = 0; i < s.queue.length; i++) {
+                html += "<li><strong>" + esc(s.queue[i].name) + "</strong> &mdash; " + esc(s.queue[i].path)
+                    + ' <form method="post" action="/queue/remove" data-queue-index="' + i + '" style="display:inline">'
+                    + '<input type="hidden" name="index" value="' + i + '">'
+                    + '<button type="submit" aria-label="Remove ' + esc(s.queue[i].name) + ' from queue">Remove</button>'
+                    + "</form></li>";
+            }
+            html += "</ol>";
+            qc.innerHTML = html;
+        }
+
+        document.getElementById("dj-status").textContent = s.dj_enabled ? "on" : "off";
+        document.getElementById("dj-toggle").textContent = s.dj_enabled ? "Turn off" : "Turn on";
+        document.getElementById("loop-status").textContent = s.loop_current ? "on" : "off";
+        document.getElementById("loop-toggle").textContent = s.loop_current ? "Turn off" : "Turn on";
+        document.getElementById("book-status").textContent = s.book_mode ? "on" : "off";
+        document.getElementById("book-toggle").textContent = s.book_mode ? "Turn off" : "Turn on";
+        document.getElementById("pause-state").textContent = s.paused ? "paused" : "running";
+        document.getElementById("pause-toggle").formAction = s.paused ? "/resume" : "/pause";
+        document.getElementById("pause-toggle").textContent = s.paused ? "Resume Stream" : "Pause Stream";
+        document.getElementById("curator-status").textContent = s.curator_enabled ? "on" : "off";
+        document.getElementById("curator-toggle").textContent = s.curator_enabled ? "Turn off" : "Turn on";
+
+        var checkInfo = document.getElementById("curator-check-info");
+        var forceBtn = document.getElementById("curator-force");
+        if (s.curator_enabled && s.curator_next_check_at != null) {
+            var remaining = s.curator_next_check_at - (s.curator_tracks_since_check || 0);
+            document.getElementById("curator-tracks-remaining").textContent = remaining;
+            checkInfo.hidden = false;
+            forceBtn.hidden = false;
+        } else {
+            checkInfo.hidden = true;
+            forceBtn.hidden = true;
+        }
+
+        // Seeking and skipping do nothing while the stream is held, so disable them.
+        var disableWhenPaused = [
+            "previous-button", "next-button", "seek-back", "seek-forward", "seek-amount",
+            "seek-time", "seek-go", "dj-toggle", "curator-toggle", "curator-force"
+        ];
+        for (var j = 0; j < disableWhenPaused.length; j++) {
+            document.getElementById(disableWhenPaused[j]).disabled = !!s.paused;
+        }
+        seekPosition.disabled = !!s.paused || s.duration == null;
+        var buttons = qc.querySelectorAll("button");
+        for (var k = 0; k < buttons.length; k++) {
+            buttons[k].disabled = !!s.paused;
+        }
+    }
+
+    var events = new EventSource("/api/events");
+    events.onmessage = function(e) { render(JSON.parse(e.data)); };
+    setInterval(renderTiming, 500);
+
+    // Forms still work without JavaScript; with it they call the JSON API instead of reloading.
+    document.addEventListener("submit", function(e) {
+        var form = e.target;
+        var button = e.submitter ? e.submitter.id : "";
+        if (form.id === "transport-form") {
+            e.preventDefault();
+            if (button === "pause-toggle") {
+                togglePause();
+            } else if (button === "next-button") {
+                act("POST", "/api/tracks/next", undefined, "Nothing to do.");
+            } else if (button === "previous-button") {
+                act("POST", "/api/tracks/previous", undefined, "No previous track.");
+            }
+        } else if (form.id === "options-form") {
+            e.preventDefault();
+            if (button === "loop-toggle") {
+                toggleLoop();
+            } else if (button === "book-toggle") {
+                var bookOn = document.getElementById("book-status").textContent === "on";
+                act("POST", "/api/book-mode", {enabled: !bookOn});
+            } else if (button === "dj-toggle") {
+                var djOn = document.getElementById("dj-status").textContent === "on";
+                act("POST", "/api/dj", {enabled: !djOn});
+            } else if (button === "curator-toggle") {
+                var curatorOn = document.getElementById("curator-status").textContent === "on";
+                act("POST", "/api/curator", {enabled: !curatorOn});
+            }
+        } else if (form.hasAttribute("data-queue-index")) {
+            e.preventDefault();
+            act("DELETE", "/api/queue/" + form.getAttribute("data-queue-index"), undefined, "Track is no longer queued.");
+        } else if (form.id === "seek-form") {
+            e.preventDefault();
+            var position = parseTime(document.getElementById("seek-time").value);
+            if (position == null) {
+                setStatus("Enter a time like 1:30 or 90.");
+                return;
+            }
+            act("POST", "/api/tracks/seek", {position: position}, "Could not seek.").then(function(j) {
+                if (j && j.ok) document.getElementById("seek-time").value = "";
+            });
+        }
+    });
+
     document.getElementById("curator-force").addEventListener("click", function() {
-        fetch("/api/curator/force", {method: "POST"});
+        act("POST", "/api/curator/force");
+    });
+
+    function seekAmount() {
+        return parseFloat(document.getElementById("seek-amount").value) || 15;
+    }
+
+    function describeSeconds(secs) {
+        if (secs >= 3600) return (secs / 3600) + (secs === 3600 ? " hour" : " hours");
+        if (secs >= 60) return (secs / 60) + (secs === 60 ? " minute" : " minutes");
+        return secs + " seconds";
+    }
+
+    function seekRelative(deltaSeconds) {
+        var elapsed = currentElapsed() || 0;
+        var target = Math.max(0, elapsed + deltaSeconds);
+        if (current.duration != null) target = Math.min(target, current.duration);
+        return act("POST", "/api/tracks/seek", {position: target}, "Could not seek.");
+    }
+
+    function togglePause() {
+        var resuming = current.paused;
+        return act("POST", resuming ? "/api/playback/resume" : "/api/playback/pause", undefined, "Nothing is playing.").then(function(j) {
+            if (j && j.ok !== false) announce(resuming ? "Playing" : "Paused");
+        });
+    }
+
+    function toggleLoop() {
+        var on = document.getElementById("loop-status").textContent !== "on";
+        return act("POST", "/api/loop", {enabled: on}).then(function(j) {
+            if (j) announce("Loop current track " + (on ? "on" : "off"));
+        });
+    }
+
+    document.getElementById("seek-back").addEventListener("click", function() {
+        seekRelative(-seekAmount());
+    });
+    document.getElementById("seek-forward").addEventListener("click", function() {
+        seekRelative(seekAmount());
+    });
+
+    var shortcutsDialog = document.getElementById("shortcuts-dialog");
+    document.getElementById("shortcuts-open").addEventListener("click", function() {
+        shortcutsDialog.showModal();
+    });
+
+    document.addEventListener("keydown", function(e) {
+        if (e.ctrlKey || e.altKey || e.metaKey || e.defaultPrevented) return;
+        var tag = e.target.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
+        if (shortcutsDialog.open) return;
+
+        var key = e.key;
+        var needsPlaying = {"N": 1, "P": 1, "j": 1, "l": 1};
+
+        if (key === "k") {
+            togglePause();
+        } else if (key === "r") {
+            toggleLoop();
+        } else if (key === "?") {
+            shortcutsDialog.showModal();
+        } else if (key >= "1" && key <= "7") {
+            document.getElementById("seek-amount").selectedIndex = Number(key) - 1;
+            announce("Seek amount " + describeSeconds(seekAmount()));
+        } else if (needsPlaying[key]) {
+            if (current.paused) {
+                announce("Paused. Press K to resume.");
+            } else if (key === "N") {
+                act("POST", "/api/tracks/next").then(function(j) { if (j) announce("Next track"); });
+            } else if (key === "P") {
+                act("POST", "/api/tracks/previous", undefined, "No previous track.").then(function(j) {
+                    if (j && j.ok !== false) announce("Previous track");
+                });
+            } else {
+                var delta = key === "j" ? -seekAmount() : seekAmount();
+                seekRelative(delta).then(function(j) {
+                    if (j && j.ok !== false) announce((delta < 0 ? "Back " : "Forward ") + describeSeconds(seekAmount()));
+                });
+            }
+        } else {
+            return;
+        }
+        e.preventDefault();
+    });
+
+    document.getElementById("chapter-select").addEventListener("change", function() {
+        act("POST", "/api/tracks/seek", {position: Number(this.value)}, "Could not seek.");
+    });
+
+    var seekSlider = document.getElementById("seek-position");
+    seekSlider.addEventListener("input", function() {
+        scrubbing = true;
+        document.getElementById("track-timing").textContent = formatTime(Number(seekSlider.value)) + " / " + formatTime(current.duration);
+        clearTimeout(seekTimer);
+        seekTimer = setTimeout(function() {
+            scrubbing = false;
+            act("POST", "/api/tracks/seek", {position: Number(seekSlider.value)}, "Could not seek.");
+        }, 300);
     });
 
     var chatMessages = document.getElementById("chat-messages");
@@ -205,8 +514,6 @@
             addChatMessage(m.role === "user" ? "You" : "Curator", m.content);
         }
     }).catch(function() {});
-
-    setInterval(update, interval);
 
     var explorerStart = document.getElementById("explorer-start");
     var explorerForce = document.getElementById("explorer-force");

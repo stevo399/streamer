@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from streamer.pipeline import AudioPipeline
+from streamer.pipeline import AudioPipeline, RingBuffer
 from streamer.scanner import Scanner
-from streamer.server import create_app
+from streamer.server import _pcm_chunks, _state_events, create_app
 from streamer.state import ServerState
 
 
@@ -63,6 +63,22 @@ class TestControls:
 
     def test_previous_redirects(self, client):
         resp = client.post("/previous", follow_redirects=False)
+        assert resp.status_code == 303
+
+    def test_pause_redirects(self, client):
+        resp = client.post("/pause", follow_redirects=False)
+        assert resp.status_code == 303
+
+    def test_resume_redirects(self, client):
+        resp = client.post("/resume", follow_redirects=False)
+        assert resp.status_code == 303
+
+    def test_seek_redirects(self, client):
+        resp = client.post(
+            "/seek",
+            data={"position": "12.5"},
+            follow_redirects=False,
+        )
         assert resp.status_code == 303
 
     def test_queue_add(self, client, app, test_media_dir):
@@ -256,10 +272,14 @@ def mock_pipeline():
         "elapsed": 30.5,
         "duration": 180.0,
         "remaining": 149.5,
+        "paused": False,
     }
+    pipeline.get_chapters = MagicMock(return_value=[])
     pipeline.request_next = MagicMock()
     pipeline.request_previous = MagicMock(return_value=True)
     pipeline.request_play = MagicMock()
+    pipeline.request_pause = MagicMock(return_value=True)
+    pipeline.request_resume = MagicMock(return_value=True)
     pipeline._curator = MagicMock()
     pipeline._curator.get_status.return_value = {
         "enabled": False,
@@ -272,6 +292,7 @@ def mock_pipeline():
         "response": "Sure thing.",
         "queued": [],
     }
+    pipeline.request_seek = MagicMock(return_value=True)
     return pipeline
 
 
@@ -286,7 +307,6 @@ def app_with_pipeline(test_media_dir, mock_pipeline):
         test_media_dir / "entertainment" / "Test Show" / "season 01" / "01.mp3"
     )
     return create_app(state=state, scanner=scanner, pipeline=mock_pipeline)
-
 
 @pytest.fixture
 def api_client(app_with_pipeline):
@@ -346,6 +366,46 @@ class TestApiTrackControl:
             "/api/tracks/play",
             json={"path": "nonexistent/file.mp3"},
         )
+        assert resp.json()["ok"] is False
+
+    def test_seek(self, api_client, mock_pipeline):
+        resp = api_client.post(
+            "/api/tracks/seek",
+            json={"position": 42.5},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["position"] == 42.5
+        mock_pipeline.request_seek.assert_called_once_with(42.5)
+
+    def test_seek_invalid_when_pipeline_missing(self, client):
+        resp = client.post(
+            "/api/tracks/seek",
+            json={"position": 10.0},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    def test_pause(self, api_client, mock_pipeline):
+        resp = api_client.post("/api/playback/pause")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        mock_pipeline.request_pause.assert_called_once()
+
+    def test_resume(self, api_client, mock_pipeline):
+        resp = api_client.post("/api/playback/resume")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        mock_pipeline.request_resume.assert_called_once()
+
+    def test_pause_invalid_when_pipeline_missing(self, client):
+        resp = client.post("/api/playback/pause")
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False
+
+    def test_resume_invalid_when_pipeline_missing(self, client):
+        resp = client.post("/api/playback/resume")
+        assert resp.status_code == 200
         assert resp.json()["ok"] is False
 
 
@@ -511,11 +571,39 @@ class TestApiStateEnriched:
         assert data["elapsed"] is None
         assert data["duration"] is None
 
+    def test_state_includes_paused_flag(self, api_client):
+        resp = api_client.get("/api/state")
+        data = resp.json()
+        assert "paused" in data
+        assert data["paused"] is False
+
+    def test_state_reflects_paused_from_state(self, client, app):
+        app.state.server_state.paused = True
+        resp = client.get("/api/state")
+        data = resp.json()
+        assert data["paused"] is True
+
 
 class TestControlPanelUpdates:
     def test_has_timing_element(self, client):
         resp = client.get("/")
         assert 'id="track-timing"' in resp.text
+
+    def test_has_seek_control(self, client):
+        resp = client.get("/")
+        # UI now exposes a seek amount selector and back/forward buttons
+        assert 'id="seek-amount"' in resp.text
+        assert 'id="seek-back"' in resp.text
+        assert 'id="seek-forward"' in resp.text
+
+    def test_has_pause_controls(self, client):
+        resp = client.get("/")
+        # single toggle button replaces separate pause/resume forms
+        assert 'id="pause-toggle"' in resp.text
+        assert 'id="pause-state"' in resp.text
+        # ensure previous/next controls exist
+        assert 'id="previous-button"' in resp.text
+        assert 'id="next-button"' in resp.text
 
     def test_has_curator_force_button(self, client):
         resp = client.get("/")
@@ -581,6 +669,29 @@ class TestExplorerAPI:
             assert "text/event-stream" in resp.headers["content-type"]
 
 
+class TestStateEvents:
+    def test_first_event_is_full_state(self):
+        state = ServerState()
+        events = _state_events(state, lambda: {"paused": state.paused})
+        assert next(events) == 'data: {"paused": false}\n\n'
+
+    def test_emits_again_after_change(self):
+        state = ServerState()
+        events = _state_events(state, lambda: {"paused": state.paused})
+        next(events)
+        state.paused = True
+        assert next(events) == 'data: {"paused": true}\n\n'
+
+    def test_heartbeat_repeats_without_change(self):
+        state = ServerState()
+        events = _state_events(state, lambda: {"n": 1}, heartbeat=0.05)
+        assert next(events) == next(events)
+
+    def test_events_endpoint_is_documented(self, api_client):
+        paths = api_client.get("/openapi.json").json()["paths"]
+        assert "get" in paths["/api/events"]
+
+
 class TestExplorerUI:
     def test_explorer_section_present(self, client):
         resp = client.get("/")
@@ -597,3 +708,232 @@ class TestExplorerUI:
     def test_explorer_progress_initially_hidden(self, client):
         resp = client.get("/")
         assert 'id="explorer-progress" hidden' in resp.text
+
+
+class TestRealtimeControlPanel:
+    def test_subscribes_to_event_stream(self, client):
+        resp = client.get("/")
+        assert 'new EventSource("/api/events")' in resp.text
+
+    def test_forms_declare_json_api_fallback(self, client):
+        resp = client.get("/")
+        assert 'formaction="/next"' in resp.text
+        assert 'formaction="/previous"' in resp.text
+        assert 'id="transport-form"' in resp.text
+
+    def test_pause_toggle_label_follows_state(self, client, app):
+        assert "Pause Stream" in client.get("/").text
+        app.state.server_state.paused = True
+        assert "Resume Stream" in client.get("/").text
+
+    def test_has_seek_position_controls(self, client):
+        resp = client.get("/")
+        assert 'id="seek-position"' in resp.text
+        assert 'for="seek-position"' in resp.text
+        assert 'id="seek-time"' in resp.text
+        assert 'id="action-status"' in resp.text
+
+
+class TestPlayPageActions:
+    def test_actions_use_json_api(self, client):
+        resp = client.get(
+            "/browse/play?file=entertainment/Test Show/season 01/01.mp3"
+        )
+        assert 'data-api="/api/tracks/play"' in resp.text
+        assert 'data-api="/api/queue"' in resp.text
+        assert 'id="action-status"' in resp.text
+
+
+class TestBookModeAPI:
+    def test_status_defaults_off(self, api_client):
+        assert api_client.get("/api/book-mode").json() == {"enabled": False}
+
+    def test_enable_and_disable(self, api_client, app_with_pipeline):
+        resp = api_client.post("/api/book-mode", json={"enabled": True})
+        assert resp.json() == {"enabled": True}
+        assert app_with_pipeline.state.server_state.book_mode is True
+        resp = api_client.post("/api/book-mode", json={"enabled": False})
+        assert resp.json() == {"enabled": False}
+
+    def test_state_includes_book_mode(self, api_client, app_with_pipeline):
+        app_with_pipeline.state.server_state.book_mode = True
+        assert api_client.get("/api/state").json()["book_mode"] is True
+
+    def test_html_toggle_redirects(self, client, app):
+        resp = client.post("/book/toggle", follow_redirects=False)
+        assert resp.status_code == 303
+        assert app.state.server_state.book_mode is True
+
+    def test_panel_has_book_mode_section(self, client):
+        resp = client.get("/")
+        assert 'id="book-toggle"' in resp.text
+        assert "Book reading mode" in resp.text
+
+
+class TestQueueFolder:
+    FOLDER = "entertainment/Test Show/season 01"
+
+    def test_queues_all_files_in_order(self, api_client, app_with_pipeline, test_media_dir):
+        resp = api_client.post("/api/queue/folder", json={"path": self.FOLDER})
+        assert resp.json() == {"ok": True, "added": 3}
+        queued = [p.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] for p in app_with_pipeline.state.server_state.queue]
+        assert queued == ["01.mp3", "02.mp3", "03.mp3"]
+
+    def test_play_first_plays_first_and_queues_rest(self, api_client, app_with_pipeline, mock_pipeline):
+        resp = api_client.post(
+            "/api/queue/folder", json={"path": self.FOLDER, "play_first": True},
+        )
+        assert resp.json() == {"ok": True, "added": 3}
+        mock_pipeline.request_play.assert_called_once()
+        assert len(app_with_pipeline.state.server_state.queue) == 2
+
+    def test_invalid_folder(self, api_client):
+        resp = api_client.post("/api/queue/folder", json={"path": "nope/missing"})
+        assert resp.json() == {"ok": False, "added": 0}
+
+    def test_html_form_redirects(self, client, app):
+        resp = client.post(
+            "/queue/folder", data={"folder": self.FOLDER, "play_first": ""},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert len(app.state.server_state.queue) == 3
+
+    def test_browse_page_offers_folder_actions(self, client):
+        resp = client.get(f"/browse/{self.FOLDER}")
+        assert 'id="folder-form"' in resp.text
+        assert "Play Folder" in resp.text
+
+
+class TestChaptersAPI:
+    def test_chapters_empty_without_pipeline(self, client):
+        assert client.get("/api/chapters").json() == {"chapters": []}
+
+    def test_chapters_from_pipeline(self, api_client, mock_pipeline):
+        mock_pipeline.get_chapters.return_value = [{"title": "Intro", "start": 0.0}]
+        assert api_client.get("/api/chapters").json() == {
+            "chapters": [{"title": "Intro", "start": 0.0}],
+        }
+
+    def test_state_reports_chapter_fields(self, api_client):
+        data = api_client.get("/api/state").json()
+        assert data["chapter"] is None
+        assert data["chapter_count"] == 0
+
+    def test_panel_has_chapter_select(self, client):
+        assert 'id="chapter-select"' in client.get("/").text
+
+
+class TestLoopAPI:
+    def test_status_defaults_off(self, api_client):
+        assert api_client.get("/api/loop").json() == {"enabled": False}
+
+    def test_enable_and_disable(self, api_client, app_with_pipeline):
+        assert api_client.post("/api/loop", json={"enabled": True}).json() == {"enabled": True}
+        assert app_with_pipeline.state.server_state.loop_current is True
+        assert api_client.post("/api/loop", json={"enabled": False}).json() == {"enabled": False}
+
+    def test_state_includes_loop(self, api_client, app_with_pipeline):
+        app_with_pipeline.state.server_state.loop_current = True
+        assert api_client.get("/api/state").json()["loop_current"] is True
+
+    def test_html_toggle_redirects(self, client, app):
+        resp = client.post("/loop/toggle", follow_redirects=False)
+        assert resp.status_code == 303
+        assert app.state.server_state.loop_current is True
+
+
+class TestPanelLayoutAndShortcuts:
+    def test_pause_toggle_sits_between_previous_and_next(self, client):
+        text = client.get("/").text
+        assert text.index('id="previous-button"') < text.index('id="pause-toggle"') < text.index('id="next-button"')
+
+    def test_toggles_share_one_options_section(self, client):
+        text = client.get("/").text
+        assert 'aria-label="Options"' in text
+        for label in ("Book reading mode", "AI DJ", "AI Curator", "Loop current track"):
+            assert label in text
+        assert 'aria-label="AI DJ"' not in text
+        assert 'aria-label="Book reading mode"' not in text
+
+    def test_has_loop_toggle(self, client, app):
+        assert 'id="loop-toggle"' in client.get("/").text
+        app.state.server_state.loop_current = True
+        assert "Turn off" in client.get("/").text
+
+    def test_has_shortcuts_dialog(self, client):
+        text = client.get("/").text
+        assert '<dialog id="shortcuts-dialog"' in text
+        assert 'aria-labelledby="shortcuts-title"' in text
+        assert 'id="shortcuts-open"' in text
+        assert "Shift+N" in text
+
+    def test_has_live_announcement_region(self, client):
+        assert 'id="announce"' in client.get("/").text
+
+
+class TestPcmStream:
+    def test_yields_data_written_after_connect(self):
+        buf = RingBuffer(size=1024)
+        chunks = _pcm_chunks(buf)
+        buf.write(b"\x01\x02\x03\x04" * 4)
+        assert next(chunks) == b"\x01\x02\x03\x04" * 4
+
+    def test_does_not_replay_old_audio(self):
+        buf = RingBuffer(size=1024)
+        buf.write(b"\x00" * 64)
+        chunks = _pcm_chunks(buf)
+        buf.write(b"\x07\x07\x07\x07")
+        assert next(chunks) == b"\x07\x07\x07\x07"
+
+    def test_starts_on_frame_boundary(self):
+        buf = RingBuffer(size=1024)
+        buf.write(b"\x00" * 6)
+        chunks = _pcm_chunks(buf)
+        buf.write(b"\x01\x02")
+        assert len(next(chunks)) % 4 == 0
+
+    def test_recovers_when_reader_is_lapped(self):
+        buf = RingBuffer(size=64)
+        chunks = _pcm_chunks(buf)
+        buf.write(b"\x09" * 200)
+        data = next(chunks)
+        assert data and len(data) % 4 == 0
+
+    def test_endpoint_without_pipeline_is_empty(self, client):
+        resp = client.get("/stream.pcm")
+        assert resp.status_code == 200
+        assert resp.content == b""
+
+    def test_listen_page(self, client):
+        resp = client.get("/listen")
+        assert resp.status_code == 200
+        assert 'id="listen-toggle"' in resp.text
+        assert 'id="latency"' in resp.text
+        assert "/stream.pcm" in resp.text
+
+    def test_panel_links_to_listener(self, client):
+        assert 'href="/listen"' in client.get("/").text
+
+
+class TestSingleFormGroups:
+    def test_transport_buttons_share_one_form(self, client):
+        text = client.get("/").text
+        start = text.index('id="transport-form"')
+        end = text.index("</form>", start)
+        group = text[start:end]
+        for button in ("previous-button", "pause-toggle", "next-button"):
+            assert f'id="{button}"' in group
+
+    def test_option_toggles_share_one_form(self, client):
+        text = client.get("/").text
+        start = text.index('id="options-form"')
+        end = text.index("</form>", start)
+        group = text[start:end]
+        for button in ("loop-toggle", "book-toggle", "dj-toggle", "curator-toggle"):
+            assert f'id="{button}"' in group
+
+    def test_shortcut_list_uses_colon_separators(self, client):
+        text = client.get("/").text
+        assert "<kbd>K</kbd>: pause or resume" in text
+        assert "<kbd>Shift+N</kbd>: next track" in text

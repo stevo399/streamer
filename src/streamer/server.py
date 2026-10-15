@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from streamer.config import AUTH_PASSWORD_HASH, AUTH_USERNAME
 from streamer.explorer import ExplorerStatus, explore
+from streamer.pipeline import BYTES_PER_FRAME
 from streamer.scanner import Scanner
 from streamer.state import ServerState
 
@@ -30,8 +31,17 @@ class ToggleBody(BaseModel):
     enabled: bool
 
 
+class FolderBody(BaseModel):
+    path: str
+    play_first: bool = False
+
+
 class ChatBody(BaseModel):
     message: str
+
+
+class SeekBody(BaseModel):
+    position: float
 
 
 # ── Response models ──────────────────────────────────────────────────────
@@ -43,6 +53,18 @@ class NowPlayingResponse(BaseModel):
     elapsed: float | None
     duration: float | None
     remaining: float | None
+    paused: bool
+    chapter: str | None = None
+    chapter_index: int | None = None
+
+
+class Chapter(BaseModel):
+    title: str
+    start: float
+
+
+class ChaptersResponse(BaseModel):
+    chapters: list[Chapter]
 
 
 class OkResponse(BaseModel):
@@ -52,6 +74,16 @@ class OkResponse(BaseModel):
 class TrackOkResponse(BaseModel):
     ok: bool
     track: str | None = None
+
+
+class SeekResponse(BaseModel):
+    ok: bool
+    position: float | None = None
+
+
+class FolderQueueResponse(BaseModel):
+    ok: bool
+    added: int = 0
 
 
 class QueueItem(BaseModel):
@@ -109,11 +141,17 @@ class StateResponse(BaseModel):
     track_path: str
     queue: list[StateQueueItem]
     dj_enabled: bool
+    paused: bool
+    book_mode: bool
+    loop_current: bool
     curator_enabled: bool
     curator_reason: str | None
     elapsed: float | None
     duration: float | None
     remaining: float | None
+    chapter: str | None = None
+    chapter_index: int | None = None
+    chapter_count: int = 0
     curator_tracks_since_check: int | None
     curator_next_check_at: int | None
 
@@ -173,6 +211,22 @@ def create_app(state=None, scanner=None, pipeline=None):
     app.state.pipeline = _pipeline
     app.state.explorer_status = ExplorerStatus()
 
+    def _enqueue_folder(folder: str, play_first: bool) -> int:
+        """Queue a folder's audio files in natural order; optionally play the first now."""
+        resolved = _scanner.resolve_browse_path(folder)
+        if resolved is None or not resolved.is_dir():
+            return 0
+        _, names = _scanner.list_directory(resolved)
+        paths = [str(resolved / name) for name in names]
+        if paths and play_first and _pipeline:
+            _pipeline.request_play(paths.pop(0))
+            added = 1
+        else:
+            added = 0
+        for path in paths:
+            _state.queue_add(path)
+        return added + len(paths)
+
     # ── HTML routes ──────────────────────────────────────────────────────
 
     @app.get("/", include_in_schema=False)
@@ -180,12 +234,20 @@ def create_app(state=None, scanner=None, pipeline=None):
         current = _state.current_track
         track_name = Path(current).name if current else "Nothing playing"
         track_path = current or ""
+        info = {"elapsed": None, "duration": None}
+        if _pipeline:
+            info = _pipeline.get_playback_info()
         queue_items = [
             {"name": Path(p).name, "path": p} for p in _state.queue
         ]
         return _templates.TemplateResponse(request, "index.html", {
             "track_name": track_name,
             "track_path": track_path,
+            "elapsed": info["elapsed"],
+            "duration": info["duration"],
+            "paused": _state.paused,
+            "book_mode": _state.book_mode,
+            "loop_current": _state.loop_current,
             "queue": queue_items,
             "dj_enabled": _state.dj_enabled,
             "curator_enabled": _state.curator_enabled,
@@ -204,6 +266,18 @@ def create_app(state=None, scanner=None, pipeline=None):
             _pipeline.request_previous()
         return RedirectResponse(url="/", status_code=303)
 
+    @app.post("/pause", include_in_schema=False)
+    def pause_playback(_user: str = Depends(verify_credentials)):
+        if _pipeline:
+            _pipeline.request_pause()
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/resume", include_in_schema=False)
+    def resume_playback(_user: str = Depends(verify_credentials)):
+        if _pipeline:
+            _pipeline.request_resume()
+        return RedirectResponse(url="/", status_code=303)
+
     @app.post("/queue/add", include_in_schema=False)
     def queue_add(
         file: str = Form(""),
@@ -212,6 +286,15 @@ def create_app(state=None, scanner=None, pipeline=None):
         resolved = _scanner.resolve_browse_path(file)
         if resolved and resolved.is_file():
             _state.queue_add(str(resolved))
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/queue/folder", include_in_schema=False)
+    def queue_folder(
+        folder: str = Form(""),
+        play_first: str = Form(""),
+        _user: str = Depends(verify_credentials),
+    ):
+        _enqueue_folder(folder, play_first == "true")
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/queue/remove", include_in_schema=False)
@@ -225,6 +308,16 @@ def create_app(state=None, scanner=None, pipeline=None):
     @app.post("/dj/toggle", include_in_schema=False)
     def dj_toggle(_user: str = Depends(verify_credentials)):
         _state.dj_enabled = not _state.dj_enabled
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/loop/toggle", include_in_schema=False)
+    def loop_toggle(_user: str = Depends(verify_credentials)):
+        _state.loop_current = not _state.loop_current
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/book/toggle", include_in_schema=False)
+    def book_toggle(_user: str = Depends(verify_credentials)):
+        _state.book_mode = not _state.book_mode
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/curator/toggle", include_in_schema=False)
@@ -243,6 +336,15 @@ def create_app(state=None, scanner=None, pipeline=None):
         if resolved and resolved.is_file():
             if _pipeline:
                 _pipeline.request_play(str(resolved))
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/seek", include_in_schema=False)
+    def seek_now(
+        position: float = Form(...),
+        _user: str = Depends(verify_credentials),
+    ):
+        if _pipeline:
+            _pipeline.request_seek(position)
         return RedirectResponse(url="/", status_code=303)
 
     @app.get("/browse/play", include_in_schema=False)
@@ -310,13 +412,13 @@ def create_app(state=None, scanner=None, pipeline=None):
         return _templates.TemplateResponse(request, "browse.html", {
             "dirs": dirs,
             "files": files,
+            "folder_path": subpath,
             "breadcrumbs": breadcrumbs,
         })
 
     # ── Legacy API ───────────────────────────────────────────────────────
 
-    @app.get("/api/state", tags=["State"], summary="Full server state", response_model=StateResponse)
-    def api_state(_user: str = Depends(verify_credentials)):
+    def _build_state() -> dict:
         current = _state.current_track
         info = {"elapsed": None, "duration": None, "remaining": None}
         if _pipeline:
@@ -332,14 +434,32 @@ def create_app(state=None, scanner=None, pipeline=None):
                 for p in _state.queue
             ],
             "dj_enabled": _state.dj_enabled,
+            "paused": _state.paused,
+            "book_mode": _state.book_mode,
+            "loop_current": _state.loop_current,
             "curator_enabled": _state.curator_enabled,
             "curator_reason": _state.curator_reason,
             "elapsed": info["elapsed"],
             "duration": info["duration"],
             "remaining": info["remaining"],
+            "chapter": info.get("chapter"),
+            "chapter_index": info.get("chapter_index"),
+            "chapter_count": len(_pipeline.get_chapters()) if _pipeline else 0,
             "curator_tracks_since_check": curator_status.get("tracks_since_check"),
             "curator_next_check_at": curator_status.get("next_check_at"),
         }
+
+    @app.get("/api/state", tags=["State"], summary="Full server state", response_model=StateResponse)
+    def api_state(_user: str = Depends(verify_credentials)):
+        return _build_state()
+
+    @app.get("/api/events", tags=["State"], summary="Stream state changes via SSE")
+    def api_events(_user: str = Depends(verify_credentials)):
+        return StreamingResponse(
+            _state_events(_state, _build_state),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/api/history", tags=["State"], summary="Recent play history")
     def api_history(_user: str = Depends(verify_credentials)):
@@ -357,7 +477,12 @@ def create_app(state=None, scanner=None, pipeline=None):
             "track_name": Path(current).name if current else "Nothing playing",
             "track_path": current or "",
             **info,
+            "paused": _state.paused,
         }
+
+    @app.get("/api/chapters", tags=["Tracks"], summary="Chapters of the current track (e.g. M4B)", response_model=ChaptersResponse)
+    def api_chapters(_user: str = Depends(verify_credentials)):
+        return {"chapters": _pipeline.get_chapters() if _pipeline else []}
 
     @app.post("/api/tracks/next", tags=["Tracks"], summary="Skip to next track", response_model=OkResponse)
     def api_tracks_next(_user: str = Depends(verify_credentials)):
@@ -377,6 +502,24 @@ def create_app(state=None, scanner=None, pipeline=None):
         if resolved and resolved.is_file():
             if _pipeline:
                 _pipeline.request_play(str(resolved))
+            return {"ok": True}
+        return {"ok": False}
+
+    @app.post("/api/tracks/seek", tags=["Tracks"], summary="Seek within the current track", response_model=SeekResponse)
+    def api_tracks_seek(body: SeekBody, _user: str = Depends(verify_credentials)):
+        if _pipeline and _pipeline.request_seek(body.position):
+            return {"ok": True, "position": body.position}
+        return {"ok": False, "position": None}
+
+    @app.post("/api/playback/pause", tags=["Tracks"], summary="Pause server-side playback", response_model=OkResponse)
+    def api_playback_pause(_user: str = Depends(verify_credentials)):
+        if _pipeline and _pipeline.request_pause():
+            return {"ok": True}
+        return {"ok": False}
+
+    @app.post("/api/playback/resume", tags=["Tracks"], summary="Resume server-side playback", response_model=OkResponse)
+    def api_playback_resume(_user: str = Depends(verify_credentials)):
+        if _pipeline and _pipeline.request_resume():
             return {"ok": True}
         return {"ok": False}
 
@@ -400,6 +543,14 @@ def create_app(state=None, scanner=None, pipeline=None):
             return {"ok": True}
         return {"ok": False}
 
+    @app.post("/api/queue/folder", tags=["Queue"], summary="Add every audio file in a folder to the queue, in order", response_model=FolderQueueResponse)
+    def api_queue_folder(
+        body: FolderBody,
+        _user: str = Depends(verify_credentials),
+    ):
+        added = _enqueue_folder(body.path, body.play_first)
+        return {"ok": added > 0, "added": added}
+
     @app.delete("/api/queue/{index}", tags=["Queue"], summary="Remove a track from the queue", response_model=OkResponse)
     def api_queue_remove(
         index: int,
@@ -420,6 +571,30 @@ def create_app(state=None, scanner=None, pipeline=None):
     ):
         _state.dj_enabled = body.enabled
         return {"enabled": _state.dj_enabled}
+
+    @app.get("/api/loop", tags=["Tracks"], summary="Get loop-current-track status", response_model=ToggleResponse)
+    def api_loop_status(_user: str = Depends(verify_credentials)):
+        return {"enabled": _state.loop_current}
+
+    @app.post("/api/loop", tags=["Tracks"], summary="Enable or disable looping the current track", response_model=ToggleResponse)
+    def api_loop_set(
+        body: ToggleBody,
+        _user: str = Depends(verify_credentials),
+    ):
+        _state.loop_current = body.enabled
+        return {"enabled": _state.loop_current}
+
+    @app.get("/api/book-mode", tags=["Book Mode"], summary="Get book reading mode status", response_model=ToggleResponse)
+    def api_book_mode_status(_user: str = Depends(verify_credentials)):
+        return {"enabled": _state.book_mode}
+
+    @app.post("/api/book-mode", tags=["Book Mode"], summary="Enable or disable book reading mode (sequential, no shuffle)", response_model=ToggleResponse)
+    def api_book_mode_set(
+        body: ToggleBody,
+        _user: str = Depends(verify_credentials),
+    ):
+        _state.book_mode = body.enabled
+        return {"enabled": _state.book_mode}
 
     @app.get("/api/curator", tags=["Curator"], summary="Get curator status and check schedule", response_model=CuratorStatusResponse)
     def api_curator_status(_user: str = Depends(verify_credentials)):
@@ -588,6 +763,23 @@ def create_app(state=None, scanner=None, pipeline=None):
             headers={"Cache-Control": "no-cache"},
         )
 
+    @app.get("/stream.pcm", include_in_schema=False)
+    def stream_pcm():
+        if not _pipeline:
+            return StreamingResponse(iter(()), media_type="application/octet-stream")
+        return StreamingResponse(
+            _pcm_chunks(_pipeline.pcm_buffer),
+            media_type="application/octet-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Audio-Format": "s16le; rate=44100; channels=2",
+            },
+        )
+
+    @app.get("/listen", include_in_schema=False)
+    def listen(request: Request):
+        return _templates.TemplateResponse(request, "listen.html", {})
+
     @app.get("/stream.mp3", include_in_schema=False)
     def stream_mp3():
         return _stream_response(
@@ -597,6 +789,37 @@ def create_app(state=None, scanner=None, pipeline=None):
         )
 
     return app
+
+
+def _pcm_chunks(buffer, chunk_size: int = 4096):
+    """Yield raw s16le/44.1kHz/stereo PCM from the live position of the buffer."""
+    # Start on a frame boundary so left and right channels are never swapped.
+    pos = buffer.get_current_position()
+    pos -= pos % BYTES_PER_FRAME
+
+    def generate():
+        nonlocal pos
+        while True:
+            data, new_pos = buffer.read(pos, max_bytes=chunk_size)
+            if data is None:
+                # Fell behind the ring buffer; resume at its oldest frame boundary.
+                pos = new_pos + (-new_pos) % BYTES_PER_FRAME
+                continue
+            if not data:
+                time.sleep(0.01)
+                continue
+            pos = new_pos
+            yield data
+
+    return generate()
+
+
+def _state_events(state, build_state, heartbeat: float = 1.0):
+    """Yield an SSE message with the full state on every change, and at least once per heartbeat."""
+    while True:
+        version = state.version
+        yield f"data: {json_mod.dumps(build_state())}\n\n"
+        state.wait_for_change(version, timeout=heartbeat)
 
 
 def _stream_response(pipeline, codec_args, mimetype):

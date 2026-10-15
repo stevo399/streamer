@@ -11,18 +11,41 @@
     <p>{{ file_path }}</p>
 
     <section aria-label="Actions for this file">
-        <form method="post" action="/play" style="display:inline">
+        <form method="post" action="/play" data-api="/api/tracks/play" style="display:inline">
             <input type="hidden" name="file" value="{{ browse_path }}">
             <button type="submit">Play Now</button>
         </form>
-        <form method="post" action="/queue/add" style="display:inline">
+        <form method="post" action="/queue/add" data-api="/api/queue" style="display:inline">
             <input type="hidden" name="file" value="{{ browse_path }}">
             <button type="submit">Add to Queue</button>
         </form>
+        <p id="action-status" role="status" aria-live="polite"></p>
     </section>
 
     <p><a href="/browse/">Back to Browser</a></p>
     <p><a href="/">Back to Control Panel</a></p>
 </main>
+<script>
+(function() {
+    // Post to the JSON API instead of reloading; without JavaScript the forms still work.
+    document.addEventListener("submit", function(e) {
+        var form = e.target;
+        var apiUrl = form.getAttribute("data-api");
+        if (!apiUrl) return;
+        e.preventDefault();
+        var status = document.getElementById("action-status");
+        var label = e.submitter ? e.submitter.textContent : "Done";
+        fetch(apiUrl, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({path: form.elements.file.value})
+        }).then(function(r) { return r.json(); }).then(function(j) {
+            status.textContent = j.ok ? label + ": done." : label + ": failed.";
+        }).catch(function() {
+            status.textContent = label + ": request failed.";
+        });
+    });
+})();
+</script>
 </body>
 </html>

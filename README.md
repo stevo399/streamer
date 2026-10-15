@@ -7,7 +7,14 @@ A local network audio streaming server that continuously broadcasts audio files 
 - Radio-style streaming: all listeners share the same playback position
 - OGG Vorbis and MP3 stream endpoints
 - Web control panel with file browser, queue management, and playback controls
+- Track seeking from the control panel and JSON API
+- Server-side pause/resume controls for the live stream
 - Smart shuffle with folder-weighted selection and repeat avoidance
+- Book reading mode with M4B chapter support
+- Loop current track
+- Keyboard shortcuts
+- Control panel updates in real time without page reloads
+- Low-latency browser listener
 - AI DJ with Gemini-generated commentary and text-to-speech
 - AI Curator that monitors playback and suggests themed playlists
 - Curator chat: talk to the curator to request specific content by title or theme
@@ -22,6 +29,16 @@ A local network audio streaming server that continuously broadcasts audio files 
 - [uv](https://docs.astral.sh/uv/)
 - [FFmpeg](https://ffmpeg.org/) on PATH
 - [ripgrep](https://github.com/BurntSushi/ripgrep) on PATH (for title-based track search)
+
+If ripgrep is unavailable, curator title search falls back to a built-in Python recursive scan.
+
+On Windows, install ripgrep with one of:
+
+```powershell
+winget install BurntSushi.ripgrep.MSVC
+# or
+choco install ripgrep
+```
 
 ## Setup
 
@@ -87,6 +104,31 @@ The control panel can be password-protected with HTTP Basic Auth. Stream endpoin
    ```
 
 3. Restart the server.
+
+## Book Reading Mode
+
+Turn on book mode from the control panel to stop shuffling. Playback continues with the next file in the same folder, in filename order, so `chapter 2` plays before `chapter 10`. Queued tracks still play first. When the last file in the folder finishes, book mode turns off and shuffle resumes.
+
+`.m4b` audiobooks are supported. If the file has chapters, the control panel shows the current chapter and lets you jump to another one.
+
+In the file browser, "Play Folder" plays the first file and queues the rest, and "Add All to Queue" queues the whole folder.
+
+## Low-latency Listener
+
+Players such as VLC buffer several seconds of the OGG and MP3 streams, so pause and skip are heard late. For a shorter delay, open `/listen` in a browser and press Start Listening. The Buffer setting trades delay for stability on weaker connections. Like the stream endpoints, this page is open without credentials.
+
+## Keyboard Shortcuts
+
+The control panel has keyboard shortcuts, which are ignored while you type in a text field. Changes are announced to screen readers. Press `?` to show the list.
+
+| Key | Action |
+|-----|--------|
+| `K` | Pause / resume |
+| `Shift+N` / `Shift+P` | Next / previous track |
+| `J` / `L` | Seek back / forward by the seek amount |
+| `1`-`7` | Seek amount: 15s, 30s, 1m, 5m, 10m, 30m, 1h |
+| `R` | Toggle loop current track |
+| `?` | Show shortcuts |
 
 ## AI DJ
 

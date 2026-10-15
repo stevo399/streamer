@@ -573,13 +573,25 @@ class Curator:
                     ["rg", "--files", "--iglob", glob_pattern, str(search_root)],
                     capture_output=True, text=True, timeout=5,
                 )
+                matches = [
+                    line.strip() for line in proc.stdout.splitlines()
+                    if line.strip() and Path(line.strip()).suffix.lower() in AUDIO_EXTENSIONS
+                ]
             except (FileNotFoundError, subprocess.TimeoutExpired):
-                continue
+                matches = []
 
-            matches = [
-                line.strip() for line in proc.stdout.splitlines()
-                if line.strip() and Path(line.strip()).suffix.lower() in AUDIO_EXTENSIONS
-            ]
+            if not matches:
+                pattern = re.compile(".*".join(re.escape(word) for word in words), re.I)
+                for candidate in search_root.rglob("*"):
+                    if not candidate.is_file():
+                        continue
+                    if candidate.suffix.lower() not in AUDIO_EXTENSIONS:
+                        continue
+                    rel = str(candidate.relative_to(search_root)).replace("\\", "/")
+                    haystack = f"{rel} {candidate.stem}"
+                    if pattern.search(haystack):
+                        matches.append(str(candidate))
+
             if not matches:
                 continue
 
